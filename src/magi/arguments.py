@@ -12,6 +12,7 @@ class CommandArguments(argparse.Namespace):
     filename: str|None=None
     query: str|None=None
     model: str|None=None
+    system_prompt: str|None=None
 
     def __init__(self, Arguments:Arguments=None):
         super().__init__()
@@ -61,6 +62,12 @@ class CommandArguments(argparse.Namespace):
             default=None,
             help="Name of the model defined in models.yml (defaults to the file's default_model).",
         )
+        _ = parser.add_argument(
+            "--system-prompt",
+            type=str,
+            default=None,
+            help="Key of the system prompt defined under system_prompts in magi.yaml.",
+        )
 
         _ = parser.add_argument(
             "filename",
@@ -70,5 +77,4 @@ class CommandArguments(argparse.Namespace):
         )
 
         _ = parser.parse_args(Arguments, namespace=self)
-
 

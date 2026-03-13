@@ -9,6 +9,19 @@
 # If no model is specified from the command line, MAGI will use the model specified here.
 default_model: deepseek-reasoner
 
+# Default key for the system_prompts map below.
+default_system_prompt: default
+
+# Define one or more named system prompts. The --system-prompt CLI flag selects a key.
+system_prompts:
+  default: |
+    You are a helpful assistant that can perform tasks for the user.
+    You have access to tools and can use them to accomplish tasks.
+    Always try to use tools when appropriate, and be sure to follow
+    the instructions provided by the user.
+  code_review: |
+    You are an expert code reviewer. Provide actionable feedback and highlight risks.
+
 # If no sessionis specified from the command line, MAGI will use the session
 # name specified here. The session name is used to persist the conversation
 # history accross runs.

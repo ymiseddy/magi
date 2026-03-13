@@ -56,6 +56,24 @@ class OpenAIAgentBuilder:
         self._tools = [tools.bash, tools.edit_file, tools.read_file]  # pyright: ignore[reportAttributeAccessIssue]
         return self
 
+    def maybe_with_skills(self, directories: list[str|Path|SkillsDirectory]|None=None) -> "OpenAIAgentBuilder":
+        """
+        This method conditionally adds skills to the agent if any skill
+        directories are found. If the `directories` parameter is not provided,
+        it will automatically search for ".skills" directories in the current
+        working directory, the user's home directory, and the directory where
+        this script is located. If any skill directories are found, it will
+        call the `with_skills()` method to add them to the agent. If no skill
+        directories are found, it will simply return the builder instance
+        without adding any skills.
+        """
+        if directories is None:
+            directories = self.__locate_skill_directories()
+
+        if directories: 
+            return self.with_skills(directories)
+        return self
+
     def with_skills(self, directories: list[str|Path|SkillsDirectory]|None) -> "OpenAIAgentBuilder":
         """
         This method allows you to specify a list of directories containing
