@@ -1,0 +1,41 @@
+# MAGI Configuration File
+
+# IMPORTANT!
+# Avoid hardcoding API keys in this file! 
+# Any value in the format ${ENV_VAR_NAME} will be replaced with the value of
+# the corresponding environment variable at runtime. 
+
+
+# If no model is specified from the command line, MAGI will use the model specified here.
+default_model: deepseek-reasoner
+
+# If no sessionis specified from the command line, MAGI will use the session
+# name specified here. The session name is used to persist the conversation
+# history accross runs.
+session: main
+
+# If auto_approve is set to true, MAGI will automatically approve all tool
+# calls without
+auto_approve: false
+
+# Model Configurations Currently models only support the OpenAI API Format.
+# Future versions may support additional formats.
+#
+# Each model configuration must include the following fields: 
+# - base_url: The base URL for the model's API endpoint. 
+# - api_key: The API key for authenticating with the model's API. This 
+#   should be set using an environment variable for security reasons. 
+# - model: The specific model name or identifier
+models:
+  glm-5:
+    base_url: https://openrouter.ai/api/v1/
+    api_key: ${OPENROUTER_API_KEY}
+    model: z-ai/glm-5
+  deepseek-reasoner:
+    base_url: https://api.deepseek.com
+    api_key: ${DEEPSEEK_API_KEY}
+    model: deepseek-reasoner
+  deepseek-chat:
+    base_url: https://api.deepseek.com
+    api_key: ${DEEPSEEK_API_KEY}
+    model: deepseek-chat
