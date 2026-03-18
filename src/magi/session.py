@@ -156,6 +156,7 @@ class MagiSession:
 
             # Handle slash commands
             if prompt.startswith('/'):
+                # Ok, we want to handle cases where the arguments are quoted or escaped - similar to shell argument parsing. AI!
                 # Split into command and arguments
                 parts = prompt.strip().split()
                 cmd = parts[0][1:]  # remove leading slash
