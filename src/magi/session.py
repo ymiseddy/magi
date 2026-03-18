@@ -129,6 +129,8 @@ class MagiSession:
         while not complete:
             complete = True
 
+            // We want to allow for slash commands. If the prompt starts with a slash, we want to split the prompt into a command and arguments. AI!
+
             if approval_results is not None:
                 event_stream = self.agent.run_stream_events(
                     message_history=session_history,
