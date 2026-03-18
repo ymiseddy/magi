@@ -121,6 +121,31 @@ class MagiSession:
             self.io.write(OTYPE_PROMPT, f"\n\n")
         return approval_results
 
+    def _process_slash_command(self, cmd: str, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        """Process slash command. Returns (handled, new_history)."""
+        handled = True
+        new_history = session_history
+        if cmd == "clear":
+            new_history = []
+            self.io.writeln(OTYPE_RESULT, "Session history cleared.")
+        elif cmd == "save":
+            self.session_manager.save(session_history)
+            self.io.writeln(OTYPE_RESULT, "Session saved.")
+        elif cmd == "load":
+            new_history = self.session_manager.load()
+            self.io.writeln(OTYPE_RESULT, "Session history reloaded.")
+        elif cmd == "help":
+            self.io.writeln(OTYPE_RESULT, "Available slash commands:\n"
+                                          "  /clear   - Clear current session history.\n"
+                                          "  /save    - Save session history to disk.\n"
+                                          "  /load    - Reload session history from disk.\n"
+                                          "  /help    - Show this help.")
+        else:
+            # Unknown command, treat as not handled (maybe pass to agent)
+            self.io.writeln(OTYPE_RESULT, f"Unknown slash command '{cmd}'. Treating as regular prompt.")
+            handled = False
+        return handled, new_history
+
 
     async def _run_prompt(self, prompt: str, session_history: list[ModelMessage] ) -> list[ModelMessage]:
         complete = False
@@ -129,7 +154,17 @@ class MagiSession:
         while not complete:
             complete = True
 
-            // We want to allow for slash commands. If the prompt starts with a slash, we want to split the prompt into a command and arguments. AI!
+            # Handle slash commands
+            if prompt.startswith('/'):
+                # Split into command and arguments
+                parts = prompt.strip().split()
+                cmd = parts[0][1:]  # remove leading slash
+                args = parts[1:] if len(parts) > 1 else []
+                handled, new_history = self._process_slash_command(cmd, args, session_history)
+                if handled:
+                    # Slash command handled; return updated history without agent interaction
+                    return new_history
+                # If not handled, fall through to normal agent processing
 
             if approval_results is not None:
                 event_stream = self.agent.run_stream_events(
