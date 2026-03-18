@@ -1,5 +1,5 @@
 from pathlib import Path
-from pydantic_ai import Agent, Tool
+from pydantic_ai import Agent, FunctionToolset, Tool
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai_skills import SkillsDirectory, SkillsToolset
@@ -139,13 +139,22 @@ class OpenAIAgentBuilder:
         if self._model is None:
             raise ValueError("Model name must be specified using the using_model() method.")
 
+
+
         model = OpenAIChatModel(model_name=self._model, provider=provider)
-        toolsets = [self._skill_toolset] if self._skill_toolset is not None else None
+        toolsets = [self._skill_toolset] if self._skill_toolset is not None else []
+
+        if self._tools:
+            builtin_toolset = FunctionToolset()
+            for tool in self._tools:
+                builtin_toolset.add_function(tool, requires_approval=True)
+            toolsets.append(builtin_toolset)
+
 
         if self._system_prompt is None:
             self._system_prompt = "You are a helpful assistant. Always try to use tools when appropriate, and be sure to follow the instructions provided by the user."
 
-        agent = Agent(model, tools=self._tools, toolsets=toolsets, system_prompt=self._system_prompt)  
+        agent = Agent(model, toolsets=toolsets, system_prompt=self._system_prompt)  
         return agent
 
 

@@ -3,10 +3,11 @@ from ast import Dict
 import asyncio
 import os
 import sys
-from typing import override
+from typing import AsyncIterator, override
 import dotenv
 
-from pydantic_ai import Agent, AgentRunResultEvent, ModelMessage, ModelMessagesTypeAdapter, PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
+from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, ModelMessagesTypeAdapter, PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
+from pydantic_ai.output import OutputDataT
 
 from magi.session import FileSessionManager, NoOpSessionManager, SessionManager
 from .io import ReaderWriter, OTYPE_RESULT, OTYPE_ERROR, OTYPE_THINKING, OTYPE_PROMPT
@@ -23,7 +24,7 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
-def _resolve_system_prompt(args: CommandArguments, config: Dict) -> str:
+def _resolve_system_prompt(args: CommandArguments, config: dict[str, object]) -> str:
     """
     Determine which system prompt to use based on CLI arguments and configuration.
     Prefers prompts defined under system_prompts, falls back to legacy system_prompt
@@ -62,7 +63,7 @@ def _resolve_system_prompt(args: CommandArguments, config: Dict) -> str:
     return DEFAULT_SYSTEM_PROMPT
 
 
-def build_agent(args: CommandArguments, config: Dict) -> Agent:
+def build_agent(args: CommandArguments, config: dict[str, object]) -> Agent:
     model_name: str = args.model or config.get("default_model", "deepseek-reasoner")
     model = config["models"][model_name]
 
@@ -79,10 +80,8 @@ def build_agent(args: CommandArguments, config: Dict) -> Agent:
     return agent
 
 
-class MagiProducer:
+class MagiSession:
     def __init__(self, args: CommandArguments, config: Dict) -> None:
-        self.args: CommandArguments = args
-        self.config: Dict = config
         self.agent: Agent = build_agent(args, config)
         self.io: ReaderWriter = ReaderWriter.console()
         self.session_manager: SessionManager
@@ -93,21 +92,31 @@ class MagiProducer:
             session_name = args.session or "default"
             self.session_manager = FileSessionManager(session_name)
 
-
-    async def run(self) -> None:
-
-        session_history = self.session_manager.load()
+    async def run_non_interactive(self, prompt: str) -> None:
+        pass
 
 
-        while True:
-            self.io.write(OTYPE_PROMPT, "> ")
-            prompt = self.io.read()
-            if prompt is None:
-                break
+    async def _run_prompt(self, prompt: str, session_history: list[ModelMessage] ) -> list[ModelMessage]:
+        print(f"Running prompt: {prompt}", file=sys.stderr)
+        complete = False
+        approval_results: DeferredToolResults | None = None
+        event_stream = AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputDataT]]
+        while not complete:
+            complete = True
 
-            self.io.write(OTYPE_PROMPT, f"\n")
-
-            event_stream = self.agent.run_stream_events(prompt, message_history=session_history)
+            print(f"Approval results: {approval_results}", file=sys.stderr)
+            if approval_results is not None:
+                event_stream = self.agent.run_stream_events(
+                    message_history=session_history,
+                    deferred_tool_results=approval_results,
+                    output_type=[str, DeferredToolRequests]
+                )
+            else:
+                event_stream = self.agent.run_stream_events(
+                    prompt, 
+                    message_history=session_history,
+                    output_type=[str, DeferredToolRequests]
+                )
             mode = None
             async for event in event_stream:
                 match event:
@@ -131,12 +140,40 @@ class MagiProducer:
                             self.io.write(OTYPE_RESULT, "\n\n## Text Response:\n\n")
                             mode = "text"
                         self.io.write(OTYPE_RESULT, content_delta)
-                    case AgentRunResultEvent(result=result):
+                    case AgentRunResultEvent() as agent_run_result:
+                        result = agent_run_result.result
+                        output = result.output
+                        if isinstance(output, DeferredToolRequests):
+                            complete = False
+                            approval_results = DeferredToolResults()
+                            for approval in output.approvals:
+                                # Now what?
+                                prompt = f"\n\nAgent is requesting approval to run `{approval.tool_name}` with arguments `{approval.args}`. Approve? (y/n)"
+                                self.io.write(OTYPE_PROMPT, f"{prompt}")
+                                approved = self.io.readapproval()
+                                approval_results.approvals[approval.tool_call_id] = approved
+                                self.io.write(OTYPE_PROMPT, f"\n\n")
+
                         session_history = list(result.all_messages())
                     case _:
                         pass
 
             self.io.write(OTYPE_PROMPT, f"\n")
+        return session_history
+
+
+    async def run_interactive(self) -> None:
+        session_history = self.session_manager.load()
+
+        while True:
+            self.io.write(OTYPE_PROMPT, "> ")
+            prompt = self.io.read()
+            if prompt is None:
+                break
+
+            session_history = await self._run_prompt(prompt, session_history)
+            self.io.write(OTYPE_PROMPT, f"\n")
+
 
         self.session_manager.save(session_history)
         await asyncio.sleep(.5)
@@ -147,5 +184,5 @@ def main() -> None:
     args = CommandArguments(sys.argv[1:]) 
     cfg = config.load_config()
 
-    producer = MagiProducer(args, cfg)
-    asyncio.run(producer.run())
+    producer = MagiSession(args, cfg)
+    asyncio.run(producer.run_interactive())
