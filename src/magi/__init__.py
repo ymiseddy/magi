@@ -2,14 +2,13 @@
 
 import asyncio
 import sys
-from collections.abc import AsyncIterator
 from typing import cast
 import dotenv
+from pydantic_ai import Agent
 
-from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
 
-from magi.session import FileSessionManager, NoOpSessionManager, SessionManager
-from .io import ReaderWriter, OTYPE_RESULT, OTYPE_THINKING, OTYPE_PROMPT
+from magi.session import FileSessionManager, MagiSession, NoOpSessionManager, SessionManager
+from .io import ReaderWriter
 from .arguments import CommandArguments
 from . import config
 
@@ -116,113 +115,55 @@ def build_agent(args: CommandArguments, config: dict[str, object]) -> Agent:
     return agent
 
 
-class MagiSession:
-    def __init__(self, args: CommandArguments, config: dict[str, object]) -> None:
-        self.agent: Agent = build_agent(args, config)
-        self.io: ReaderWriter = ReaderWriter.console()
-        self.session_manager: SessionManager
 
-        if args.no_session:
-            self.session_manager = NoOpSessionManager()
-        else:
-            session_name = args.session or "default"
-            self.session_manager = FileSessionManager(session_name)
+class Dependencies:
+    def __init__(self, config: dict[str, object], args: CommandArguments) -> None:
+        self._config: dict[str, object] = config
+        self._args: CommandArguments = args
 
-    async def run_non_interactive(self, _prompt: str) -> None:
-        pass
+        self._agent: Agent | None = None
+        self._io: ReaderWriter | None = None
+        self._session_manager: SessionManager | None = None
 
+    @property
+    def agent(self) -> Agent:
+        if self._agent is None:
+            self._agent = build_agent(self._args, self._config)
 
-    def _get_approvals(self, requests: DeferredToolRequests) -> DeferredToolResults:
-        approval_results = DeferredToolResults()
-        for approval in requests.approvals:
-            # Now what?
-            prompt = f"\n\nAgent is requesting approval to run `{approval.tool_name}` with arguments `{approval.args}`. Approve? (y/n)"
-            self.io.write(OTYPE_PROMPT, f"{prompt}")
-            approved = self.io.readapproval()
-            approval_results.approvals[approval.tool_call_id] = approved
-            self.io.write(OTYPE_PROMPT, f"\n\n")
-        return approval_results
+        return self._agent
 
+    @property
+    def io(self) -> ReaderWriter:
+        if self._io is None:
+            self._io = ReaderWriter.console()
 
-    async def _run_prompt(self, prompt: str, session_history: list[ModelMessage] ) -> list[ModelMessage]:
-        complete = False
-        approval_results: DeferredToolResults | None = None
-        event_stream: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str | DeferredToolRequests]]
-        while not complete:
-            complete = True
+        return self._io
 
-            if approval_results is not None:
-                event_stream = self.agent.run_stream_events(
-                    message_history=session_history,
-                    deferred_tool_results=approval_results,
-                    output_type=[str, DeferredToolRequests]
-                )
+    @property
+    def session_manager(self) -> SessionManager:
+        if self._session_manager is None:
+            if self._args.no_session:
+                self._session_manager = NoOpSessionManager()
             else:
-                event_stream = self.agent.run_stream_events(
-                    prompt, 
-                    message_history=session_history,
-                    output_type=[str, DeferredToolRequests]
-                )
-            mode: str | None = None
-            async for event in event_stream:
-                match event:
-                    case PartStartEvent(part=ThinkingPart(content=content)):
-                        if mode != "thinking":
-                            self.io.write(OTYPE_THINKING, "\n\n## Thinking...\n\n")
-                            mode = "thinking"
-                        self.io.write(OTYPE_THINKING, content)
-                    case PartStartEvent(part=TextPart(content=content)):
-                        if mode != "text":
-                            self.io.write(OTYPE_RESULT, "\n\n## Text Response:\n\n")
-                            mode = "text"
-                        self.io.write(OTYPE_RESULT, content)
-                    case PartDeltaEvent(delta=ThinkingPartDelta(content_delta=content_delta)):
-                        if mode != "thinking":
-                            self.io.write(OTYPE_THINKING, "\n\n## Thinking...\n\n")
-                            mode = "thinking"
-                        if content_delta is not None:
-                            self.io.write(OTYPE_THINKING, content_delta)
-                    case PartDeltaEvent(delta=TextPartDelta(content_delta=content_delta)):
-                        if mode != "text":
-                            self.io.write(OTYPE_RESULT, "\n\n## Text Response:\n\n")
-                            mode = "text"
-                        self.io.write(OTYPE_RESULT, content_delta)
-                    case AgentRunResultEvent() as agent_run_result:
-                        result = agent_run_result.result
-                        output = result.output
-                        if isinstance(output, DeferredToolRequests):
-                            complete = False
-                            approval_results = self._get_approvals(output)
+                session_name = self._args.session or "default"
+                self._session_manager = FileSessionManager(session_name)
 
-                        session_history = list(result.all_messages())
-                    case _:
-                        pass
+        return self._session_manager
 
-            self.io.write(OTYPE_PROMPT, f"\n")
-        return session_history
-
-
-    async def run_interactive(self) -> None:
-        session_history = self.session_manager.load()
-
-        while True:
-            self.io.write(OTYPE_PROMPT, "> ")
-            prompt = self.io.read()
-            if not prompt:
-                break
-
-            session_history = await self._run_prompt(prompt, session_history)
-            self.io.write(OTYPE_PROMPT, f"\n")
-
-
-        self.session_manager.save(session_history)
-        await asyncio.sleep(.5)
-
+    @property
+    def magi_session(self) -> MagiSession:
+        return MagiSession(
+            agent=self.agent,
+            io=self.io,
+            session_manager=self.session_manager,
+        )
 
 def main() -> None:
     _ = dotenv.load_dotenv()
     args = CommandArguments(sys.argv[1:]) 
     cfg = config.load_config()
 
-    producer = MagiSession(args, cfg)
-    asyncio.run(producer.run_interactive())
+    deps = Dependencies(cfg, args)
+    magi_session = deps.magi_session
+    asyncio.run(magi_session.run_interactive())
+
