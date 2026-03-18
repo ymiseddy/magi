@@ -124,6 +124,8 @@ class MagiSession:
 
     def _process_slash_command(self, cmd: str, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         """Process slash command. Returns (handled, new_history)."""
+
+        # Instead of just hardcoding the commands, we should have a more flexible system. Perhapks use a decorator to register slash commands on methods? We should search for any methods decorated (be mindful if this is a subclass of MagiSession) and build a command registry. AI!
         handled = True
         new_history = session_history
         if cmd == "clear":
