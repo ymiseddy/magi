@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 import os
 import shlex
-from typing import override
+from typing import override, Callable
 from collections.abc import AsyncIterator
 
 from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, ModelMessagesTypeAdapter, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
@@ -106,9 +106,42 @@ class MagiSession:
         self.agent: Agent = agent
         self.io: ReaderWriter = io
         self.session_manager: SessionManager = session_manager
+        self._command_handlers: dict[str, Callable[[list[str], list[ModelMessage]], tuple[bool, list[ModelMessage]]]] = {}
+        self._register_default_commands()
 
     async def run_non_interactive(self, _prompt: str) -> None:
         pass
+
+
+    def _register_default_commands(self) -> None:
+        """Register built-in slash command handlers."""
+        self._command_handlers['clear'] = self._slash_clear
+        self._command_handlers['save'] = self._slash_save
+        self._command_handlers['load'] = self._slash_load
+        self._command_handlers['help'] = self._slash_help
+
+    def _slash_clear(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        new_history: list[ModelMessage] = []
+        self.io.writeln(OTYPE_RESULT, "Session history cleared.")
+        return True, new_history
+
+    def _slash_save(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        self.session_manager.save(session_history)
+        self.io.writeln(OTYPE_RESULT, "Session saved.")
+        return True, session_history
+
+    def _slash_load(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        new_history = self.session_manager.load()
+        self.io.writeln(OTYPE_RESULT, "Session history reloaded.")
+        return True, new_history
+
+    def _slash_help(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        self.io.writeln(OTYPE_RESULT, "Available slash commands:\n"
+                                      "  /clear   - Clear current session history.\n"
+                                      "  /save    - Save session history to disk.\n"
+                                      "  /load    - Reload session history from disk.\n"
+                                      "  /help    - Show this help.")
+        return True, session_history
 
 
     def _get_approvals(self, requests: DeferredToolRequests) -> DeferredToolResults:
@@ -124,30 +157,16 @@ class MagiSession:
 
     def _process_slash_command(self, cmd: str, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         """Process slash command. Returns (handled, new_history)."""
+        handler = self._command_handlers.get(cmd)
+        if handler is not None:
+            return handler(args, session_history)
+        # Unknown command, treat as not handled (maybe pass to agent)
+        self.io.writeln(OTYPE_RESULT, f"Unknown slash command '{cmd}'. Treating as regular prompt.")
+        return False, session_history
 
-        # Instead of just hardcoding the commands, we should have a more flexible system. Perhapks use a decorator to register slash commands on methods? We should search for any methods decorated (be mindful if this is a subclass of MagiSession) and build a command registry. AI!
-        handled = True
-        new_history = session_history
-        if cmd == "clear":
-            new_history = []
-            self.io.writeln(OTYPE_RESULT, "Session history cleared.")
-        elif cmd == "save":
-            self.session_manager.save(session_history)
-            self.io.writeln(OTYPE_RESULT, "Session saved.")
-        elif cmd == "load":
-            new_history = self.session_manager.load()
-            self.io.writeln(OTYPE_RESULT, "Session history reloaded.")
-        elif cmd == "help":
-            self.io.writeln(OTYPE_RESULT, "Available slash commands:\n"
-                                          "  /clear   - Clear current session history.\n"
-                                          "  /save    - Save session history to disk.\n"
-                                          "  /load    - Reload session history from disk.\n"
-                                          "  /help    - Show this help.")
-        else:
-            # Unknown command, treat as not handled (maybe pass to agent)
-            self.io.writeln(OTYPE_RESULT, f"Unknown slash command '{cmd}'. Treating as regular prompt.")
-            handled = False
-        return handled, new_history
+    def register_slash_command(self, name: str, handler: Callable[[list[str], list[ModelMessage]], tuple[bool, list[ModelMessage]]]) -> None:
+        """Register a custom slash command handler."""
+        self._command_handlers[name] = handler
 
     def _try_slash_command(self, prompt: str, session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         """
