@@ -147,6 +147,25 @@ class MagiSession:
             handled = False
         return handled, new_history
 
+    def _try_slash_command(self, prompt: str, session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        """
+        Handle slash command if applicable.
+        Returns (handled, new_history). If not a slash command or not handled, returns (False, session_history).
+        """
+        if not prompt.startswith('/'):
+            return False, session_history
+        try:
+            parts = shlex.split(prompt.strip(), posix=True)
+        except ValueError:
+            # Fallback to simple splitting if quotes are mismatched
+            parts = prompt.strip().split()
+        if not parts:
+            return False, session_history
+        cmd = parts[0][1:]  # remove leading slash
+        args = parts[1:] if len(parts) > 1 else []
+        handled, new_history = self._process_slash_command(cmd, args, session_history)
+        return handled, new_history
+
 
     async def _run_prompt(self, prompt: str, session_history: list[ModelMessage] ) -> list[ModelMessage]:
         complete = False
@@ -156,25 +175,11 @@ class MagiSession:
             complete = True
 
             # Handle slash commands
-            if prompt.startswith('/'):
-                # Let's move this to a separate class method for cleanliness. AI!
-                # Parse command and arguments respecting quotes
-                try:
-                    parts = shlex.split(prompt.strip(), posix=True)
-                except ValueError:
-                    # Fallback to simple splitting if quotes are mismatched
-                    parts = prompt.strip().split()
-                if not parts:
-                    # Empty? Should not happen.
-                    pass
-                else:
-                    cmd = parts[0][1:]  # remove leading slash
-                    args = parts[1:] if len(parts) > 1 else []
-                    handled, new_history = self._process_slash_command(cmd, args, session_history)
-                    if handled:
-                        # Slash command handled; return updated history without agent interaction
-                        return new_history
-                # If not handled, fall through to normal agent processing
+            handled, new_history = self._try_slash_command(prompt, session_history)
+            if handled:
+                # Slash command handled; return updated history without agent interaction
+                return new_history
+            # If not handled, fall through to normal agent processing
 
             if approval_results is not None:
                 event_stream = self.agent.run_stream_events(
