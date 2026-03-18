@@ -157,6 +157,7 @@ class MagiSession:
 
             # Handle slash commands
             if prompt.startswith('/'):
+                # Let's move this to a separate class method for cleanliness. AI!
                 # Parse command and arguments respecting quotes
                 try:
                     parts = shlex.split(prompt.strip(), posix=True)
