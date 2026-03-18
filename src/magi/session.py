@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 import os
+import shlex
 from typing import override
 from collections.abc import AsyncIterator
 
@@ -156,15 +157,22 @@ class MagiSession:
 
             # Handle slash commands
             if prompt.startswith('/'):
-                # Ok, we want to handle cases where the arguments are quoted or escaped - similar to shell argument parsing. AI!
-                # Split into command and arguments
-                parts = prompt.strip().split()
-                cmd = parts[0][1:]  # remove leading slash
-                args = parts[1:] if len(parts) > 1 else []
-                handled, new_history = self._process_slash_command(cmd, args, session_history)
-                if handled:
-                    # Slash command handled; return updated history without agent interaction
-                    return new_history
+                # Parse command and arguments respecting quotes
+                try:
+                    parts = shlex.split(prompt.strip(), posix=True)
+                except ValueError:
+                    # Fallback to simple splitting if quotes are mismatched
+                    parts = prompt.strip().split()
+                if not parts:
+                    # Empty? Should not happen.
+                    pass
+                else:
+                    cmd = parts[0][1:]  # remove leading slash
+                    args = parts[1:] if len(parts) > 1 else []
+                    handled, new_history = self._process_slash_command(cmd, args, session_history)
+                    if handled:
+                        # Slash command handled; return updated history without agent interaction
+                        return new_history
                 # If not handled, fall through to normal agent processing
 
             if approval_results is not None:
