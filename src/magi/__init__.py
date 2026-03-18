@@ -96,15 +96,25 @@ class MagiSession:
         pass
 
 
+    def _get_approvals(self, requests: DeferredToolRequests) -> DeferredToolResults:
+        approval_results = DeferredToolResults()
+        for approval in requests.approvals:
+            # Now what?
+            prompt = f"\n\nAgent is requesting approval to run `{approval.tool_name}` with arguments `{approval.args}`. Approve? (y/n)"
+            self.io.write(OTYPE_PROMPT, f"{prompt}")
+            approved = self.io.readapproval()
+            approval_results.approvals[approval.tool_call_id] = approved
+            self.io.write(OTYPE_PROMPT, f"\n\n")
+        return approval_results
+
+
     async def _run_prompt(self, prompt: str, session_history: list[ModelMessage] ) -> list[ModelMessage]:
-        print(f"Running prompt: {prompt}", file=sys.stderr)
         complete = False
         approval_results: DeferredToolResults | None = None
         event_stream = AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputDataT]]
         while not complete:
             complete = True
 
-            print(f"Approval results: {approval_results}", file=sys.stderr)
             if approval_results is not None:
                 event_stream = self.agent.run_stream_events(
                     message_history=session_history,
@@ -145,14 +155,7 @@ class MagiSession:
                         output = result.output
                         if isinstance(output, DeferredToolRequests):
                             complete = False
-                            approval_results = DeferredToolResults()
-                            for approval in output.approvals:
-                                # Now what?
-                                prompt = f"\n\nAgent is requesting approval to run `{approval.tool_name}` with arguments `{approval.args}`. Approve? (y/n)"
-                                self.io.write(OTYPE_PROMPT, f"{prompt}")
-                                approved = self.io.readapproval()
-                                approval_results.approvals[approval.tool_call_id] = approved
-                                self.io.write(OTYPE_PROMPT, f"\n\n")
+                            approval_results = self._get_approvals(output)
 
                         session_history = list(result.all_messages())
                     case _:

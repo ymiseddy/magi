@@ -11,10 +11,25 @@ class OpenAIAgentBuilder:
         self._base_url: str|None = None
         self._model: str|None = None
         self._tools: list[Tool] = []
+        self._require_approval_for_tools: bool = True
+        self._require_approval_for_skills: bool = True
         self._api_key: str|None = None
         self._system_prompt: str|None = None
         self._skill_toolset: SkillsToolset|None = None
 
+    def without_skill_approval(self) -> "OpenAIAgentBuilder":
+        """
+        This method configures the builder to not require approval for using skills. By default, the builder is set to require approval for both tools and skills. Calling this method will set the internal flag to indicate that skill usage does not require approval.
+        """
+        self._require_approval_for_skills = False
+        return self
+
+    def without_tool_approval(self) -> "OpenAIAgentBuilder":
+        """
+        This method configures the builder to not require approval for using tools. By default, the builder is set to require approval for both tools and skills. Calling this method will set the internal flag to indicate that tool usage does not require approval.
+        """
+        self._require_approval_for_tools = False
+        return self
 
     def with_url(self, url: str) -> "OpenAIAgentBuilder":
         """
@@ -142,12 +157,23 @@ class OpenAIAgentBuilder:
 
 
         model = OpenAIChatModel(model_name=self._model, provider=provider)
-        toolsets = [self._skill_toolset] if self._skill_toolset is not None else []
+
+        toolsets = []
+
+
+        if self._skill_toolset is not None:
+            skill_toolset = self._skill_toolset
+            if self._require_approval_for_skills:
+                skill_toolset = self._skill_toolset.approval_required()
+
+            toolsets.append(skill_toolset)
+
+        #toolsets = [self._skill_toolset] if self._skill_toolset is not None else []
 
         if self._tools:
             builtin_toolset = FunctionToolset()
             for tool in self._tools:
-                builtin_toolset.add_function(tool, requires_approval=True)
+                builtin_toolset.add_function(tool, requires_approval=self._require_approval_for_tools)
             toolsets.append(builtin_toolset)
 
 
