@@ -1,7 +1,7 @@
 [project]
 name = "magi"
 version = "0.1.0"
-description = "Add your description here"
+description = "A framework for building AI agents that can solve complex problems by leveraging multiple skills and tools."
 readme = "README.md"
 authors = [
     { name = "Shawn Eddy", email = "ymiseddy@gmail.com" }

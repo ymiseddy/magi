@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+
+# Run the main.py script using uv (uvicorn) with any additional arguments passed to this script
+
+# Get the absolute path of this script, resolving any symlinks
+SCRIPT_PATH="$0"
+while [ -L "$SCRIPT_PATH" ]; do
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+    SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+    # Handle relative symlinks
+    case "$SCRIPT_PATH" in
+        /*) ;;  # Absolute path - use as is
+        *)  SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH" ;;  # Relative path - prepend dir
+    esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+uv run --project "$SCRIPT_DIR" magi "$@"
