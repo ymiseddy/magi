@@ -1,19 +1,17 @@
-from abc import ABC, abstractmethod
-from ast import Dict
+# pyright: reportImportCycles=false
+
 import asyncio
-import os
 import sys
-from typing import AsyncIterator, override
+from collections.abc import AsyncIterator
+from typing import cast
 import dotenv
 
-from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, ModelMessagesTypeAdapter, PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
-from pydantic_ai.output import OutputDataT
+from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
 
 from magi.session import FileSessionManager, NoOpSessionManager, SessionManager
-from .io import ReaderWriter, OTYPE_RESULT, OTYPE_ERROR, OTYPE_THINKING, OTYPE_PROMPT
+from .io import ReaderWriter, OTYPE_RESULT, OTYPE_THINKING, OTYPE_PROMPT
 from .arguments import CommandArguments
 from . import config
-from . import agent_builder
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -24,16 +22,46 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+def _string_dict(value: object) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+
+    result: dict[str, str] = {}
+    for key, item in cast(dict[object, object], value).items():
+        if isinstance(key, str) and isinstance(item, str):
+            result[key] = item
+    return result
+
+
+def _object_dict(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+
+    result: dict[str, object] = {}
+    for key, item in cast(dict[object, object], value).items():
+        if isinstance(key, str):
+            result[key] = item
+    return result
+
+
+def _require_str(mapping: dict[str, object], key: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"Model config field '{key}' must be a string.")
+    return value
+
+
 def _resolve_system_prompt(args: CommandArguments, config: dict[str, object]) -> str:
     """
     Determine which system prompt to use based on CLI arguments and configuration.
     Prefers prompts defined under system_prompts, falls back to legacy system_prompt
     string, and ultimately uses DEFAULT_SYSTEM_PROMPT.
     """
-    prompts_cfg = config.get("system_prompts")
-    requested_key = getattr(args, "system_prompt", None)
-    if isinstance(prompts_cfg, dict) and prompts_cfg:
-        default_key = config.get("default_system_prompt")
+    prompts_cfg = _string_dict(config.get("system_prompts"))
+    requested_key = args.system_prompt
+    if prompts_cfg:
+        default_key_obj = config.get("default_system_prompt")
+        default_key = default_key_obj if isinstance(default_key_obj, str) else None
         prompt_key = requested_key or default_key
 
         if prompt_key is None and len(prompts_cfg) == 1:
@@ -64,16 +92,24 @@ def _resolve_system_prompt(args: CommandArguments, config: dict[str, object]) ->
 
 
 def build_agent(args: CommandArguments, config: dict[str, object]) -> Agent:
-    model_name: str = args.model or config.get("default_model", "deepseek-reasoner")
-    model = config["models"][model_name]
+    default_model = config.get("default_model")
+    model_name = args.model or (default_model if isinstance(default_model, str) else "deepseek-reasoner")
+    models_cfg = _object_dict(config.get("models"))
+    if models_cfg is None:
+        raise ValueError("Config must define a 'models' mapping.")
+
+    raw_model = _object_dict(models_cfg.get(model_name))
+    if raw_model is None:
+        raise ValueError(f"Model '{model_name}' not found in config.")
 
     system_prompt = _resolve_system_prompt(args, config)
+    from .agent_builder import OpenAIAgentBuilder
 
-    agent = agent_builder.OpenAIAgentBuilder() \
-        .with_url(model["base_url"]) \
-        .with_api_key(model["api_key"]) \
+    agent = OpenAIAgentBuilder() \
+        .with_url(_require_str(raw_model, "base_url")) \
+        .with_api_key(_require_str(raw_model, "api_key")) \
         .with_system_prompt(system_prompt) \
-        .using_model(model["model"])  \
+        .using_model(_require_str(raw_model, "model")) \
         .with_tools() \
         .maybe_with_skills() \
         .build()
@@ -81,7 +117,7 @@ def build_agent(args: CommandArguments, config: dict[str, object]) -> Agent:
 
 
 class MagiSession:
-    def __init__(self, args: CommandArguments, config: Dict) -> None:
+    def __init__(self, args: CommandArguments, config: dict[str, object]) -> None:
         self.agent: Agent = build_agent(args, config)
         self.io: ReaderWriter = ReaderWriter.console()
         self.session_manager: SessionManager
@@ -92,7 +128,7 @@ class MagiSession:
             session_name = args.session or "default"
             self.session_manager = FileSessionManager(session_name)
 
-    async def run_non_interactive(self, prompt: str) -> None:
+    async def run_non_interactive(self, _prompt: str) -> None:
         pass
 
 
@@ -111,7 +147,7 @@ class MagiSession:
     async def _run_prompt(self, prompt: str, session_history: list[ModelMessage] ) -> list[ModelMessage]:
         complete = False
         approval_results: DeferredToolResults | None = None
-        event_stream = AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputDataT]]
+        event_stream: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str | DeferredToolRequests]]
         while not complete:
             complete = True
 
@@ -127,7 +163,7 @@ class MagiSession:
                     message_history=session_history,
                     output_type=[str, DeferredToolRequests]
                 )
-            mode = None
+            mode: str | None = None
             async for event in event_stream:
                 match event:
                     case PartStartEvent(part=ThinkingPart(content=content)):
@@ -144,7 +180,8 @@ class MagiSession:
                         if mode != "thinking":
                             self.io.write(OTYPE_THINKING, "\n\n## Thinking...\n\n")
                             mode = "thinking"
-                        self.io.write(OTYPE_THINKING, content_delta)
+                        if content_delta is not None:
+                            self.io.write(OTYPE_THINKING, content_delta)
                     case PartDeltaEvent(delta=TextPartDelta(content_delta=content_delta)):
                         if mode != "text":
                             self.io.write(OTYPE_RESULT, "\n\n## Text Response:\n\n")
@@ -171,7 +208,7 @@ class MagiSession:
         while True:
             self.io.write(OTYPE_PROMPT, "> ")
             prompt = self.io.read()
-            if prompt is None:
+            if not prompt:
                 break
 
             session_history = await self._run_prompt(prompt, session_history)

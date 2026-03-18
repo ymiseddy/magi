@@ -70,7 +70,7 @@ async def edit_file(_: RunContext, relative_path: str, diff: str) -> str:
 
     target_path = (base_dir / path).resolve()
     try:
-        target_path.relative_to(base_dir)
+        _relative_target = target_path.relative_to(base_dir)
     except ValueError:
         return "Error: Target path must be within the project directory."
 
@@ -187,7 +187,7 @@ async def read_file(_: RunContext, relative_path: str, max_chars: int | None = N
 
     target_path = (base_dir / path).resolve()
     try:
-        target_path.relative_to(base_dir)
+        _relative_target = target_path.relative_to(base_dir)
     except ValueError:
         return "Error: Target path must be within the project directory."
 
@@ -212,7 +212,4 @@ async def read_file(_: RunContext, relative_path: str, max_chars: int | None = N
     if len(content) > limit:
         return f"[truncated to {limit} chars]\n{content[:limit]}"
     return content
-
-
-
 

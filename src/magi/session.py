@@ -92,7 +92,6 @@ class FileSessionManager(SessionManager):
             os.remove(path)
         except FileNotFoundError:
             return
-        except OSError as exc:
+        except OSError as _exc:
             raise
-
 

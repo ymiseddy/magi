@@ -1,14 +1,16 @@
-from ast import Dict, Str
 import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import cast
+
 import yaml
+from yaml import SafeLoader
+from yaml.nodes import ScalarNode
 
 # Regex to find placeholders like ${MY_VAR} or ${MY_VAR:-default}
 pattern = re.compile(r'.*?\$\{([\w]+)(?::-(.*?))?\}.*?')
 
-def env_var_constructor(loader, node):
+def env_var_constructor(loader: SafeLoader, node: ScalarNode) -> str:
     value = loader.construct_scalar(node)
     # Using expandvars is the easiest way to handle ${VAR} syntax
     return os.path.expandvars(value)
@@ -17,7 +19,7 @@ def env_var_constructor(loader, node):
 yaml.SafeLoader.add_constructor('!env', env_var_constructor)
 
 # Optional: Add a resolver so you don't have to use the !env tag manually
-yaml.SafeLoader.add_implicit_resolver('!env', pattern, None)
+yaml.SafeLoader.add_implicit_resolver('!env', pattern, None)  # pyright: ignore[reportUnknownMemberType]
 
 
 def _discover_config_files() -> list[str]:
@@ -48,16 +50,17 @@ def _discover_config_files() -> list[str]:
     return config_files
 
 
-def load_config(files: list[str]|None=None) -> Dict:
+def load_config(files: list[str] | None = None) -> dict[str, object]:
     if files is None:
         files = _discover_config_files()
-    config = {}
+    config: dict[str, object] = {}
     for file in files:
-        with open(file, "r") as f:
+        with open(file, "r", encoding="utf-8") as f:
             try:
-                data = yaml.safe_load(f)  # pyright: ignore[reportAny]
+                data = cast(object, yaml.safe_load(f))
                 if isinstance(data, dict):
-                    config.update(data)  # pyright: ignore[reportUnknownMemberType]
+                    typed_data = cast(dict[object, object], data)
+                    config.update({key: value for key, value in typed_data.items() if isinstance(key, str)})
             except yaml.YAMLError as e:
                 print(f"Error parsing YAML file {file}: {e}")
-    return config  # pyright: ignore[reportUnknownVariableType]
+    return config

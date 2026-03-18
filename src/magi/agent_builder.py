@@ -1,16 +1,18 @@
+from collections.abc import Callable
 from pathlib import Path
-from pydantic_ai import Agent, FunctionToolset, Tool
+from pydantic_ai import Agent, FunctionToolset
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai_skills import SkillsDirectory, SkillsToolset
 
-from magi import tools
+from . import tools
 
 class OpenAIAgentBuilder:
     def __init__(self) -> None:
         self._base_url: str|None = None
         self._model: str|None = None
-        self._tools: list[Tool] = []
+        self._tools: list[Callable[..., object]] = []
         self._require_approval_for_tools: bool = True
         self._require_approval_for_skills: bool = True
         self._api_key: str|None = None
@@ -68,7 +70,7 @@ class OpenAIAgentBuilder:
         - `tools.read_file`: A tool for reading files.
         """
 
-        self._tools = [tools.bash, tools.edit_file, tools.read_file]  # pyright: ignore[reportAttributeAccessIssue]
+        self._tools = [tools.bash, tools.edit_file, tools.read_file]
         return self
 
     def maybe_with_skills(self, directories: list[str|Path|SkillsDirectory]|None=None) -> "OpenAIAgentBuilder":
@@ -114,7 +116,7 @@ class OpenAIAgentBuilder:
         script is located. It returns a list of paths to any found ".skills"
         directories.
         """
-        directories: list[str | Path | SkillsDirectory] | None = []
+        directories: list[str | Path | SkillsDirectory] = []
         # Check to see if there is a ".skills" directory in the current working directory, if so, add it to the directories list - just do this one task and stop.
         cwd_skills = Path.cwd() / ".skills"
         if cwd_skills.exists() and cwd_skills.is_dir():
@@ -158,7 +160,7 @@ class OpenAIAgentBuilder:
 
         model = OpenAIChatModel(model_name=self._model, provider=provider)
 
-        toolsets = []
+        toolsets: list[AbstractToolset[None]] = []
 
 
         if self._skill_toolset is not None:
@@ -180,7 +182,5 @@ class OpenAIAgentBuilder:
         if self._system_prompt is None:
             self._system_prompt = "You are a helpful assistant. Always try to use tools when appropriate, and be sure to follow the instructions provided by the user."
 
-        agent = Agent(model, toolsets=toolsets, system_prompt=self._system_prompt)  
+        agent = Agent(model, toolsets=toolsets, system_prompt=self._system_prompt)
         return agent
-
-
