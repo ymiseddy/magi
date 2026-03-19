@@ -121,6 +121,7 @@ class FileSessionManager(SessionManager):
         except OSError as _exc:
             raise
 
+# The term session is a bit overloaded. Help me come up with a better name for this class. AI!
 class MagiSession:
     def __init__(self, agent: Agent, io: ReaderWriter, session_manager: SessionManager) -> None:
         self.agent: Agent = agent
