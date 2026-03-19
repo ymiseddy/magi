@@ -7,7 +7,8 @@ import dotenv
 from pydantic_ai import Agent
 
 
-from magi.session import FileSessionManager, MagiSession, NoOpSessionManager, SessionManager
+from .repl import MagiRepl
+from .session import FileSessionManager, NoOpSessionManager, SessionManager
 from .io import ReaderWriter
 from .arguments import CommandArguments
 from . import config
@@ -57,7 +58,7 @@ def _resolve_system_prompt(args: CommandArguments, config: dict[str, object]) ->
     string, and ultimately uses DEFAULT_SYSTEM_PROMPT.
     """
     prompts_cfg = _string_dict(config.get("system_prompts"))
-    requested_key = args.system_prompt
+    requested_key = args.system_prompt or ("watch" if args.watch else None)
     if prompts_cfg:
         default_key_obj = config.get("default_system_prompt")
         default_key = default_key_obj if isinstance(default_key_obj, str) else None
@@ -160,8 +161,8 @@ class Dependencies:
         return self._session_manager
 
     @property
-    def magi_session(self) -> MagiSession:
-        return MagiSession(
+    def magi_session(self) -> MagiRepl:
+        return MagiRepl(
             agent=self.agent,
             io=self.io,
             session_manager=self.session_manager,
@@ -181,5 +182,8 @@ def main() -> None:
 
     deps = Dependencies(cfg, args, isatty)
     magi_session = deps.magi_session
-    asyncio.run(magi_session.run(prompt, isatty))
+    if args.watch:
+        asyncio.run(magi_session.watch())
+        return
 
+    asyncio.run(magi_session.run(prompt, isatty))

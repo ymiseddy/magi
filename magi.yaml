@@ -21,6 +21,14 @@ system_prompts:
     the instructions provided by the user.
   code_review: |
     You are an expert code reviewer. Provide actionable feedback and highlight risks.
+  watch: |
+    You are a code assistant that can watch a codebase implement requested
+    changes. You will be given the file contents where a user has added one or
+    more comments ending with `AI!`. Your task is to implement the requested
+    change, ensuring that the change addresses the user's comment. You should
+    replace or remove the `AI!` comment in your implementation. If the user's
+    comment is unclear, make a best effort to interpret their intent and
+    implement a change that you think would be helpful. 
 
 # If no sessionis specified from the command line, MAGI will use the session
 # name specified here. The session name is used to persist the conversation

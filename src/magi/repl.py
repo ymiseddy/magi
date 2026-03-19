@@ -1,0 +1,350 @@
+from dataclasses import dataclass
+import asyncio
+from pathlib import Path
+import subprocess
+import shlex
+from collections.abc import AsyncIterator
+from typing import Any, Callable
+
+from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
+
+from magi.io import OTYPE_PROMPT, OTYPE_RESULT, OTYPE_THINKING, ReaderWriter
+from magi.session import SessionManager
+
+SlashCommandHandler = Callable[[list[str], list[ModelMessage]], tuple[bool, list[ModelMessage]]]
+
+
+@dataclass(frozen=True)
+class SlashCommandDefinition:
+    name: str
+    description: str
+
+
+def slashcommand(name: str, description: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Attach slash-command metadata to a handler method."""
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        setattr(func, "_slash_command_definition", SlashCommandDefinition(name=name, description=description))
+        return func
+
+    return decorator
+
+
+class MagiRepl:
+    def __init__(self, agent: Agent, io: ReaderWriter, session_manager: SessionManager) -> None:
+        self.agent: Agent = agent
+        self.io: ReaderWriter = io
+        self.session_manager: SessionManager = session_manager
+        self._command_handlers: dict[str, SlashCommandHandler] = {}
+        self._command_descriptions: dict[str, str] = {}
+        self._register_decorated_commands()
+
+    def _register_decorated_commands(self) -> None:
+        """Register slash command handlers declared via decorator metadata."""
+        for attribute_name in dir(self):
+            handler = getattr(self, attribute_name)
+            definition = getattr(handler, "_slash_command_definition", None)
+            if definition is None:
+                continue
+            self.register_slash_command(definition.name, handler, definition.description)
+
+    @slashcommand("clear", "Clear current session history.")
+    def _slash_clear(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        new_history: list[ModelMessage] = []
+        self.io.writeln(OTYPE_RESULT, "Session history cleared.")
+        return True, new_history
+
+    @slashcommand("save", "Save session history to disk.")
+    def _slash_save(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        self.session_manager.save(session_history)
+        self.io.writeln(OTYPE_RESULT, "Session saved.")
+        return True, session_history
+
+    @slashcommand("load", "Reload session history from disk.")
+    def _slash_load(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        new_history = self.session_manager.load()
+        self.io.writeln(OTYPE_RESULT, "Session history reloaded.")
+        return True, new_history
+
+
+    @slashcommand("history", "Show current session history.")
+    def _slash_history(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        if not session_history:
+            self.io.writeln(OTYPE_RESULT, "Session history is empty.")
+            return True, session_history
+        history_str = "\n".join(
+            f"{i+1}. [{msg}]" for i, msg in enumerate(session_history)
+        )
+        self.io.writeln(OTYPE_RESULT, f"Current session history:\n{history_str}")
+        return True, session_history
+
+    @slashcommand("help", "Show this help.")
+    def _slash_help(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        commands = "\n".join(
+            f"  /{name:<7} - {description}"
+            for name, description in sorted(self._command_descriptions.items())
+        )
+        self.io.writeln(OTYPE_RESULT, f"Available slash commands:\n{commands}")
+        return True, session_history
+
+
+    def _get_approvals(self, requests: DeferredToolRequests) -> DeferredToolResults:
+        approval_results = DeferredToolResults()
+        for approval in requests.approvals:
+            # Now what?
+            prompt = f"\n\nAgent is requesting approval to run `{approval.tool_name}` with arguments `{approval.args}`. Approve? (y/n)"
+            self.io.write(OTYPE_PROMPT, f"{prompt}")
+            approved = self.io.readapproval()
+            approval_results.approvals[approval.tool_call_id] = approved
+            self.io.write(OTYPE_PROMPT, f"\n\n")
+        return approval_results
+
+    def _process_slash_command(self, cmd: str, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        """Process slash command. Returns (handled, new_history)."""
+        handler = self._command_handlers.get(cmd)
+        if handler is not None:
+            return handler(args, session_history)
+        # Unknown command, treat as not handled (maybe pass to agent)
+        self.io.writeln(OTYPE_RESULT, f"Unknown slash command '{cmd}'. Treating as regular prompt.")
+        return False, session_history
+
+    def register_slash_command(self, name: str, handler: SlashCommandHandler, description: str = "") -> None:
+        """Register a custom slash command handler."""
+        self._command_handlers[name] = handler
+        self._command_descriptions[name] = description
+
+    def _try_slash_command(self, prompt: str, session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        """
+        Handle slash command if applicable.
+        Returns (handled, new_history). If not a slash command or not handled, returns (False, session_history).
+        """
+        if not prompt.startswith('/'):
+            return False, session_history
+        try:
+            parts = shlex.split(prompt.strip(), posix=True)
+        except ValueError:
+            # Fallback to simple splitting if quotes are mismatched
+            parts = prompt.strip().split()
+        if not parts:
+            return False, session_history
+        cmd = parts[0][1:]  # remove leading slash
+        args = parts[1:] if len(parts) > 1 else []
+        handled, new_history = self._process_slash_command(cmd, args, session_history)
+        return handled, new_history
+
+
+    async def _run_prompt(self, prompt: str, session_history: list[ModelMessage] ) -> list[ModelMessage]:
+        complete = False
+        approval_results: DeferredToolResults | None = None
+        event_stream: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str | DeferredToolRequests]]
+        while not complete:
+            complete = True
+
+            # Handle slash commands
+            handled, new_history = self._try_slash_command(prompt, session_history)
+            if handled:
+                # Slash command handled; return updated history without agent interaction
+                return new_history
+            # If not handled, fall through to normal agent processing
+
+            if approval_results is not None:
+                event_stream = self.agent.run_stream_events(
+                    message_history=session_history,
+                    deferred_tool_results=approval_results,
+                    output_type=[str, DeferredToolRequests]
+                )
+            else:
+                event_stream = self.agent.run_stream_events(
+                    prompt, 
+                    message_history=session_history,
+                    output_type=[str, DeferredToolRequests]
+                )
+            mode: str | None = None
+            async for event in event_stream:
+                match event:
+                    case PartStartEvent(part=ThinkingPart(content=content)):
+                        if mode != "thinking":
+                            self.io.write(OTYPE_THINKING, "\n\n## Thinking...\n\n")
+                            mode = "thinking"
+                        self.io.write(OTYPE_THINKING, content)
+                    case PartStartEvent(part=TextPart(content=content)):
+                        if mode != "text":
+                            self.io.write(OTYPE_RESULT, "\n\n## Text Response:\n\n")
+                            mode = "text"
+                        self.io.write(OTYPE_RESULT, content)
+                    case PartDeltaEvent(delta=ThinkingPartDelta(content_delta=content_delta)):
+                        if mode != "thinking":
+                            self.io.write(OTYPE_THINKING, "\n\n## Thinking...\n\n")
+                            mode = "thinking"
+                        if content_delta is not None:
+                            self.io.write(OTYPE_THINKING, content_delta)
+                    case PartDeltaEvent(delta=TextPartDelta(content_delta=content_delta)):
+                        if mode != "text":
+                            self.io.write(OTYPE_RESULT, "\n\n## Text Response:\n\n")
+                            mode = "text"
+                        self.io.write(OTYPE_RESULT, content_delta)
+                    case AgentRunResultEvent() as agent_run_result:
+                        result = agent_run_result.result
+                        output = result.output
+                        if isinstance(output, DeferredToolRequests):
+                            complete = False
+                            approval_results = self._get_approvals(output)
+
+                        session_history = list(result.all_messages())
+                    case _:
+                        pass
+
+            self.io.write(OTYPE_PROMPT, f"\n")
+        return session_history
+
+
+    async def run(self, prompt: str | None = None, isatty: bool=False) -> None:
+        """Run the session in either interactive or non-interactive mode."""
+
+        if prompt is not None:
+            await self.run_non_interactive(prompt)
+        else:
+            await self.run_interactive()
+
+    async def run_interactive(self) -> None:
+        """Run an interactive session, prompting the user for input until they exit."""
+        session_history = self.session_manager.load()
+
+        while True:
+            self.io.write(OTYPE_PROMPT, "> ")
+            prompt = self.io.read()
+            if not prompt:
+                break
+
+            session_history = await self._run_prompt(prompt, session_history)
+            self.io.write(OTYPE_PROMPT, f"\n")
+
+
+        self.session_manager.save(session_history)
+
+    async def run_non_interactive(self, prompt: str) -> None:
+        """Run a single prompt without interactive input, then exit."""
+        session_history = self.session_manager.load()
+        session_history = await self._run_prompt(prompt, session_history)
+        self.session_manager.save(session_history)
+
+    def _is_git_ignored(self, path: Path) -> bool:
+        try:
+            result = subprocess.run(
+                ["git", "check-ignore", "-q", str(path)],
+                cwd=Path.cwd(),
+                check=False,
+                capture_output=True,
+            )
+        except FileNotFoundError:
+            return False
+
+        if result.returncode == 0:
+            return True
+        if result.returncode == 128:
+            return False
+        return False
+
+    def _line_requests_ai(self, line: str) -> bool:
+        stripped = line.strip()
+        if not stripped.endswith("AI!"):
+            return False
+
+        comment_prefixes = ("#", "//", "--", ";", "%", "/*", "*", "<!--")
+        return stripped.startswith(comment_prefixes)
+
+    def _file_requests_ai(self, path: Path) -> bool:
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return any(self._line_requests_ai(line) for line in f)
+        except (OSError, UnicodeDecodeError):
+            return False
+
+    def _build_watch_prompt(self, path: Path, contents: str) -> str:
+        return (
+            f"File: {path}\n\n"
+            "A watched file changed and contains one or more comment lines ending with `AI!`.\n"
+            "Implement the requested change in this file.\n\n"
+            "```text\n"
+            f"{contents}\n"
+            "```"
+        )
+
+    def _iter_watch_files(self) -> list[Path]:
+        root = Path.cwd()
+        files: list[Path] = []
+
+        for current_root, dirnames, filenames in root.walk(top_down=True):
+            dirnames[:] = [
+                dirname
+                for dirname in dirnames
+                if not dirname.startswith(".")
+                and not self._is_git_ignored(Path(current_root, dirname).relative_to(root))
+            ]
+
+            for filename in filenames:
+                if filename.startswith("."):
+                    continue
+
+                path = Path(current_root, filename)
+                relpath = path.relative_to(root)
+                if self._is_git_ignored(relpath):
+                    continue
+
+                if path.is_file():
+                    files.append(path)
+
+        return files
+
+    async def watch(self) -> None:
+        """Watch mode: watch for changes to files in the current directory and subdirectories,
+           if the file contains a comment line ending with `AI!`, send the file contents as a 
+            prompt to the agent. Do not monitor files starting with a dot (e.g. .sessions/).
+            Also, respect .gitignore if present, and do not monitor ignored files.
+            """
+        session_history = self.session_manager.load()
+        known_mtimes: dict[Path, int] = {}
+
+        for path in self._iter_watch_files():
+            try:
+                known_mtimes[path] = path.stat().st_mtime_ns
+            except OSError:
+                continue
+
+        self.io.writeln(OTYPE_RESULT, "Watching for AI! comments...")
+
+        while True:
+            current_files = set(self._iter_watch_files())
+
+            # Forget files that no longer exist.
+            removed_files = set(known_mtimes) - current_files
+            for removed in removed_files:
+                del known_mtimes[removed]
+
+            for path in sorted(current_files):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+
+                mtime_ns = stat.st_mtime_ns
+                previous_mtime = known_mtimes.get(path)
+                known_mtimes[path] = mtime_ns
+
+                if previous_mtime is None or previous_mtime == mtime_ns:
+                    continue
+
+                if not self._file_requests_ai(path):
+                    continue
+
+                try:
+                    contents = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+
+                self.io.writeln(OTYPE_RESULT, f"Detected AI! request in {path}")
+                prompt = self._build_watch_prompt(path.relative_to(Path.cwd()), contents)
+                session_history = await self._run_prompt(prompt, session_history)
+                self.session_manager.save(session_history)
+
+            await asyncio.sleep(1.0)
