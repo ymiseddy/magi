@@ -50,6 +50,20 @@ def _discover_config_files() -> list[str]:
     return config_files
 
 
+def _merge_configs(base: dict[str, object], override: dict[str, object]) -> dict[str, object]:
+    merged = dict(base)
+    for key, value in override.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_configs(
+                {k: v for k, v in cast(dict[object, object], current).items() if isinstance(k, str)},
+                {k: v for k, v in cast(dict[object, object], value).items() if isinstance(k, str)},
+            )
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(files: list[str] | None = None) -> dict[str, object]:
     if files is None:
         files = _discover_config_files()
@@ -60,7 +74,10 @@ def load_config(files: list[str] | None = None) -> dict[str, object]:
                 data = cast(object, yaml.safe_load(f))
                 if isinstance(data, dict):
                     typed_data = cast(dict[object, object], data)
-                    config.update({key: value for key, value in typed_data.items() if isinstance(key, str)})
+                    config = _merge_configs(
+                        config,
+                        {key: value for key, value in typed_data.items() if isinstance(key, str)},
+                    )
             except yaml.YAMLError as e:
                 print(f"Error parsing YAML file {file}: {e}")
     return config

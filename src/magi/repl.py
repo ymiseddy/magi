@@ -7,6 +7,8 @@ from collections.abc import AsyncIterator
 from typing import Callable, TypeVar, cast
 
 from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
+from watchdog.events import FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent
+from watchdog.observers import Observer
 
 from magi.io import OTYPE_PROMPT, OTYPE_RESULT, OTYPE_THINKING, ReaderWriter
 from magi.session import SessionManager
@@ -38,11 +40,15 @@ class MagiRepl:
         io: ReaderWriter,
         session_manager: SessionManager,
         available_models: list[str] | None = None,
+        available_system_prompts: list[str] | None = None,
+        default_system_prompt: str | None = None,
     ) -> None:
         self.agent: Agent = agent
         self.io: ReaderWriter = io
         self.session_manager: SessionManager = session_manager
         self.available_models: list[str] = available_models or []
+        self.available_system_prompts: list[str] = available_system_prompts or []
+        self.default_system_prompt: str | None = default_system_prompt
         self._command_handlers: dict[str, SlashCommandHandler] = {}
         self._command_descriptions: dict[str, str] = {}
         self._register_decorated_commands()
@@ -107,6 +113,19 @@ class MagiRepl:
 
         models = "\n".join(f"  {name}" for name in self.available_models)
         self.io.writeln(OTYPE_RESULT, f"Available models:\n{models}")
+        return True, session_history
+
+    @slashcommand("prompts", "List available system prompts.")
+    def _slash_prompts(self, _args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        if not self.available_system_prompts:
+            self.io.writeln(OTYPE_RESULT, "No system prompts are configured.")
+            return True, session_history
+
+        prompts = "\n".join(
+            f"  {name}{' (default)' if name == self.default_system_prompt else ''}"
+            for name in self.available_system_prompts
+        )
+        self.io.writeln(OTYPE_RESULT, f"Available system prompts:\n{prompts}")
         return True, session_history
 
 
@@ -292,6 +311,19 @@ class MagiRepl:
             "```"
         )
 
+    def _is_watchable_path(self, path: Path) -> bool:
+        root = Path.cwd()
+
+        try:
+            relpath = path.relative_to(root)
+        except ValueError:
+            return False
+
+        if any(part.startswith(".") for part in relpath.parts):
+            return False
+
+        return not self._is_git_ignored(relpath)
+
     def _iter_watch_files(self) -> list[Path]:
         root = Path.cwd()
         files: list[Path] = []
@@ -318,6 +350,57 @@ class MagiRepl:
 
         return files
 
+    def _start_watchdog_observer(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        queue: asyncio.Queue[Path | tuple[str, Path]],
+    ) -> Observer:
+        root = Path.cwd()
+        repl = self
+
+        class ChangeHandler(FileSystemEventHandler):
+            def _enqueue(self, item: Path | tuple[str, Path]) -> None:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+
+            def _handle_file_event(self, event: FileSystemEvent) -> None:
+                if event.is_directory:
+                    return
+
+                path = Path(event.src_path)
+                if repl._is_watchable_path(path):
+                    self._enqueue(path)
+
+            def on_modified(self, event: FileSystemEvent) -> None:
+                self._handle_file_event(event)
+
+            def on_created(self, event: FileSystemEvent) -> None:
+                self._handle_file_event(event)
+
+            def on_deleted(self, event: FileSystemEvent) -> None:
+                if event.is_directory:
+                    return
+
+                path = Path(event.src_path)
+                if repl._is_watchable_path(path):
+                    self._enqueue(("deleted", path))
+
+            def on_moved(self, event: FileSystemMovedEvent) -> None:
+                if event.is_directory:
+                    return
+
+                src_path = Path(event.src_path)
+                dest_path = Path(event.dest_path)
+
+                if repl._is_watchable_path(src_path):
+                    self._enqueue(("deleted", src_path))
+                if repl._is_watchable_path(dest_path):
+                    self._enqueue(dest_path)
+
+        observer = Observer()
+        observer.schedule(ChangeHandler(), str(root), recursive=True)
+        observer.start()
+        return observer
+
     async def watch(self) -> None:
         """Watch mode: watch for changes to files in the current directory and subdirectories,
            if the file contains a comment line ending with `AI!`, send the file contents as a 
@@ -333,20 +416,26 @@ class MagiRepl:
             except OSError:
                 continue
 
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[Path | tuple[str, Path]] = asyncio.Queue()
+        observer = self._start_watchdog_observer(loop, queue)
+
         self.io.writeln(OTYPE_RESULT, "Watching for AI! comments...")
 
-        while True:
-            current_files = set(self._iter_watch_files())
+        try:
+            while True:
+                event = await queue.get()
+                if isinstance(event, tuple):
+                    action, path = event
+                    if action == "deleted":
+                        known_mtimes.pop(path, None)
+                    continue
 
-            # Forget files that no longer exist.
-            removed_files = set(known_mtimes) - current_files
-            for removed in removed_files:
-                del known_mtimes[removed]
-
-            for path in sorted(current_files):
+                path = event
                 try:
                     stat = path.stat()
                 except OSError:
+                    known_mtimes.pop(path, None)
                     continue
 
                 mtime_ns = stat.st_mtime_ns
@@ -368,5 +457,6 @@ class MagiRepl:
                 prompt = self._build_watch_prompt(path.relative_to(Path.cwd()), contents)
                 session_history = await self._run_prompt(prompt, session_history)
                 self.session_manager.save(session_history)
-
-            await asyncio.sleep(1.0)
+        finally:
+            observer.stop()
+            await asyncio.to_thread(observer.join)

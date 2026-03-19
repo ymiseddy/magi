@@ -13,6 +13,7 @@ dependencies = [
     "pydotenv>=0.0.7",
     "pyyaml>=6.0.3",
     "typing-extensions>=4.15.0",
+    "watchdog>=6.0.0",
 ]
 
 [project.scripts]

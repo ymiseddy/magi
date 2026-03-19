@@ -6,7 +6,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai_skills import SkillsDirectory, SkillsToolset
 
-from . import tools
+from .tools import bash, edit_file, read_file
 
 class OpenAIAgentBuilder:
     def __init__(self) -> None:
@@ -65,12 +65,12 @@ class OpenAIAgentBuilder:
         """
         This method adds a predefined set of tools to the agent. The tools
         included are:
-        - `tools.bash`: A tool for executing bash commands.
-        - `tools.edit_file`: A tool for editing files.
-        - `tools.read_file`: A tool for reading files.
+        - `bash`: A ool for executing bash commands.
+        - `edit_file`: A tool for editing files.
+        - `read_file`: A tool for reading files.
         """
 
-        self._tools = [tools.bash, tools.edit_file, tools.read_file]
+        self._tools = [bash, edit_file, read_file]
         return self
 
     def maybe_with_skills(self, directories: list[str|Path|SkillsDirectory]|None=None) -> "OpenAIAgentBuilder":

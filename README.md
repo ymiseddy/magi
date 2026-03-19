@@ -125,6 +125,7 @@ Available in-chat slash commands:
 
 - `/help`
 - `/models`
+- `/prompts`
 - `/history`
 - `/save`
 - `/load`
