@@ -1,16 +1,10 @@
 
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 import os
-from typing import Any, override, Callable
+from typing import override
 
-from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, ModelMessagesTypeAdapter, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
-
-from magi.io import OTYPE_PROMPT, OTYPE_RESULT, OTYPE_THINKING, ReaderWriter
- 
-import asyncio
-
+from pydantic_ai import ModelMessage, ModelMessagesTypeAdapter
 
 SESSION_DIRECTORY = ".sessions"
 

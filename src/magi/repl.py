@@ -32,10 +32,17 @@ def slashcommand(name: str, description: str) -> Callable[[F], F]:
 
 
 class MagiRepl:
-    def __init__(self, agent: Agent, io: ReaderWriter, session_manager: SessionManager) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        io: ReaderWriter,
+        session_manager: SessionManager,
+        available_models: list[str] | None = None,
+    ) -> None:
         self.agent: Agent = agent
         self.io: ReaderWriter = io
         self.session_manager: SessionManager = session_manager
+        self.available_models: list[str] = available_models or []
         self._command_handlers: dict[str, SlashCommandHandler] = {}
         self._command_descriptions: dict[str, str] = {}
         self._register_decorated_commands()
@@ -90,6 +97,16 @@ class MagiRepl:
             for name, description in sorted(self._command_descriptions.items())
         )
         self.io.writeln(OTYPE_RESULT, f"Available slash commands:\n{commands}")
+        return True, session_history
+
+    @slashcommand("models", "List available models.")
+    def _slash_models(self, _args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        if not self.available_models:
+            self.io.writeln(OTYPE_RESULT, "No models are configured.")
+            return True, session_history
+
+        models = "\n".join(f"  {name}" for name in self.available_models)
+        self.io.writeln(OTYPE_RESULT, f"Available models:\n{models}")
         return True, session_history
 
 

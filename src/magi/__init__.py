@@ -44,6 +44,14 @@ def _object_dict(value: object) -> dict[str, object] | None:
     return result
 
 
+def _available_model_names(config: dict[str, object]) -> list[str]:
+    models_cfg = _object_dict(config.get("models"))
+    if models_cfg is None:
+        return []
+
+    return sorted(models_cfg.keys())
+
+
 def _require_str(mapping: dict[str, object], key: str) -> str:
     value = mapping.get(key)
     if not isinstance(value, str):
@@ -166,6 +174,7 @@ class Dependencies:
             agent=self.agent,
             io=self.io,
             session_manager=self.session_manager,
+            available_models=_available_model_names(self._config),
         )
 
 def main() -> None:

@@ -20,7 +20,7 @@ class CommandArguments(argparse.Namespace):
             description="Magi LLM agent.",
         )
         _ = parser.add_argument(
-            "-S",
+            "-s",
             "--session",
             default="main",
             help="Name of the session to use.",
@@ -39,6 +39,7 @@ class CommandArguments(argparse.Namespace):
             help="Automatically approve tool usage without prompting.",
         )
         _ = parser.add_argument(
+            "-S",
             "--no-session",
             action="store_true",
             help="Disable loading and saving session history.",
@@ -57,12 +58,14 @@ class CommandArguments(argparse.Namespace):
             help="Query string (if not using filename).",
         )
         _ = parser.add_argument(
+            "-m",
             "--model",
             type=str,
             default=None,
             help="Name of the model defined in models.yml (defaults to the file's default_model).",
         )
         _ = parser.add_argument(
+            "-p",
             "--system-prompt",
             type=str,
             default=None,
