@@ -130,7 +130,7 @@ class Dependencies:
         self._agent: Agent | None = None
         self._io: ReaderWriter | None = None
         self._session_manager: SessionManager | None = None
-        self._isatty = isatty
+        self._isatty: bool = isatty
 
     @property
     def agent(self) -> Agent:

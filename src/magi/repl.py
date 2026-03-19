@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import shlex
 from collections.abc import AsyncIterator
-from typing import Any, Callable
+from typing import Callable, TypeVar, cast
 
 from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
 
@@ -19,11 +19,12 @@ class SlashCommandDefinition:
     name: str
     description: str
 
+F = TypeVar("F", bound=Callable[..., object])
 
-def slashcommand(name: str, description: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def slashcommand(name: str, description: str) -> Callable[[F], F]:
     """Attach slash-command metadata to a handler method."""
 
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+    def decorator(func: F) -> F:
         setattr(func, "_slash_command_definition", SlashCommandDefinition(name=name, description=description))
         return func
 
@@ -42,33 +43,37 @@ class MagiRepl:
     def _register_decorated_commands(self) -> None:
         """Register slash command handlers declared via decorator metadata."""
         for attribute_name in dir(self):
-            handler = getattr(self, attribute_name)
-            definition = getattr(handler, "_slash_command_definition", None)
-            if definition is None:
+            handler = cast(object, getattr(self, attribute_name))  # type: ignore[no-untyped-call]
+            if not callable(handler):
                 continue
-            self.register_slash_command(definition.name, handler, definition.description)
+            definition: object = getattr(handler, "_slash_command_definition", None)  # type: ignore[no-untyped-call]
+            if not isinstance(definition, SlashCommandDefinition):
+                continue
+            # At this point we know handler is a callable with the slash command signature
+            typed_handler = cast(SlashCommandHandler, handler)
+            self.register_slash_command(definition.name, typed_handler, definition.description)
 
     @slashcommand("clear", "Clear current session history.")
-    def _slash_clear(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+    def _slash_clear(self, _args: list[str], _session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         new_history: list[ModelMessage] = []
         self.io.writeln(OTYPE_RESULT, "Session history cleared.")
         return True, new_history
 
     @slashcommand("save", "Save session history to disk.")
-    def _slash_save(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+    def _slash_save(self, _args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         self.session_manager.save(session_history)
         self.io.writeln(OTYPE_RESULT, "Session saved.")
         return True, session_history
 
     @slashcommand("load", "Reload session history from disk.")
-    def _slash_load(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+    def _slash_load(self, _args: list[str], _session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         new_history = self.session_manager.load()
         self.io.writeln(OTYPE_RESULT, "Session history reloaded.")
         return True, new_history
 
 
     @slashcommand("history", "Show current session history.")
-    def _slash_history(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+    def _slash_history(self, _args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         if not session_history:
             self.io.writeln(OTYPE_RESULT, "Session history is empty.")
             return True, session_history
@@ -79,7 +84,7 @@ class MagiRepl:
         return True, session_history
 
     @slashcommand("help", "Show this help.")
-    def _slash_help(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+    def _slash_help(self, _: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         commands = "\n".join(
             f"  /{name:<7} - {description}"
             for name, description in sorted(self._command_descriptions.items())
@@ -198,7 +203,7 @@ class MagiRepl:
         return session_history
 
 
-    async def run(self, prompt: str | None = None, isatty: bool=False) -> None:
+    async def run(self, prompt: str | None = None, _isatty: bool=False) -> None:
         """Run the session in either interactive or non-interactive mode."""
 
         if prompt is not None:
