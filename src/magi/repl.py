@@ -1,14 +1,16 @@
 from dataclasses import dataclass
 import asyncio
+import os
 from pathlib import Path
 import subprocess
 import shlex
 from collections.abc import AsyncIterator
-from typing import Callable, TypeVar, cast
+from typing import Callable, TypeVar, cast, override
 
 from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
-from watchdog.events import FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent
+from watchdog.events import DirCreatedEvent, DirDeletedEvent, DirModifiedEvent, FileCreatedEvent, FileDeletedEvent, FileModifiedEvent, FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent, FileMovedEvent
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
 
 from magi.io import OTYPE_PROMPT, OTYPE_RESULT, OTYPE_THINKING, ReaderWriter
 from magi.session import SessionManager
@@ -354,42 +356,49 @@ class MagiRepl:
         self,
         loop: asyncio.AbstractEventLoop,
         queue: asyncio.Queue[Path | tuple[str, Path]],
-    ) -> Observer:
+    ) -> BaseObserver:
         root = Path.cwd()
         repl = self
 
         class ChangeHandler(FileSystemEventHandler):
             def _enqueue(self, item: Path | tuple[str, Path]) -> None:
-                loop.call_soon_threadsafe(queue.put_nowait, item)
+                _ = loop.call_soon_threadsafe(queue.put_nowait, item)
+
+            def _event_path(self, raw_path: bytes | str) -> Path:
+                return Path(os.fsdecode(raw_path))
 
             def _handle_file_event(self, event: FileSystemEvent) -> None:
                 if event.is_directory:
                     return
 
-                path = Path(event.src_path)
+                path = self._event_path(event.src_path)
                 if repl._is_watchable_path(path):
                     self._enqueue(path)
 
-            def on_modified(self, event: FileSystemEvent) -> None:
+            @override
+            def on_modified(self, event: DirModifiedEvent | FileModifiedEvent) -> None:
                 self._handle_file_event(event)
 
-            def on_created(self, event: FileSystemEvent) -> None:
+            @override
+            def on_created(self, event: DirCreatedEvent | FileCreatedEvent) -> None:
                 self._handle_file_event(event)
 
-            def on_deleted(self, event: FileSystemEvent) -> None:
+            @override
+            def on_deleted(self, event: DirDeletedEvent | FileDeletedEvent) -> None:
                 if event.is_directory:
                     return
 
-                path = Path(event.src_path)
+                path = self._event_path(event.src_path)
                 if repl._is_watchable_path(path):
                     self._enqueue(("deleted", path))
 
-            def on_moved(self, event: FileSystemMovedEvent) -> None:
+            @override
+            def on_moved(self, event: FileMovedEvent | FileSystemMovedEvent) -> None:
                 if event.is_directory:
                     return
 
-                src_path = Path(event.src_path)
-                dest_path = Path(event.dest_path)
+                src_path = self._event_path(event.src_path)
+                dest_path = self._event_path(event.dest_path)
 
                 if repl._is_watchable_path(src_path):
                     self._enqueue(("deleted", src_path))
@@ -397,7 +406,7 @@ class MagiRepl:
                     self._enqueue(dest_path)
 
         observer = Observer()
-        observer.schedule(ChangeHandler(), str(root), recursive=True)
+        _ = observer.schedule(ChangeHandler(), str(root), recursive=True)
         observer.start()
         return observer
 
@@ -428,14 +437,14 @@ class MagiRepl:
                 if isinstance(event, tuple):
                     action, path = event
                     if action == "deleted":
-                        known_mtimes.pop(path, None)
+                        _ = known_mtimes.pop(path, None)
                     continue
 
                 path = event
                 try:
                     stat = path.stat()
                 except OSError:
-                    known_mtimes.pop(path, None)
+                    _ = known_mtimes.pop(path, None)
                     continue
 
                 mtime_ns = stat.st_mtime_ns
