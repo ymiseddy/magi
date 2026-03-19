@@ -1,9 +1,10 @@
 
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 import os
 import shlex
-from typing import override, Callable
+from typing import Any, override, Callable
 from collections.abc import AsyncIterator
 
 from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, ModelMessagesTypeAdapter, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
@@ -14,6 +15,25 @@ import asyncio
 
 
 SESSION_DIRECTORY = ".sessions"
+
+
+SlashCommandHandler = Callable[[list[str], list[ModelMessage]], tuple[bool, list[ModelMessage]]]
+
+
+@dataclass(frozen=True)
+class SlashCommandDefinition:
+    name: str
+    description: str
+
+
+def slashcommand(name: str, description: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Attach slash-command metadata to a handler method."""
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        setattr(func, "_slash_command_definition", SlashCommandDefinition(name=name, description=description))
+        return func
+
+    return decorator
 
 class SessionManager(ABC):
 
@@ -106,41 +126,56 @@ class MagiSession:
         self.agent: Agent = agent
         self.io: ReaderWriter = io
         self.session_manager: SessionManager = session_manager
-        self._command_handlers: dict[str, Callable[[list[str], list[ModelMessage]], tuple[bool, list[ModelMessage]]]] = {}
-        self._register_default_commands()
+        self._command_handlers: dict[str, SlashCommandHandler] = {}
+        self._command_descriptions: dict[str, str] = {}
+        self._register_decorated_commands()
 
-    async def run_non_interactive(self, _prompt: str) -> None:
-        pass
+    def _register_decorated_commands(self) -> None:
+        """Register slash command handlers declared via decorator metadata."""
+        for attribute_name in dir(self):
+            handler = getattr(self, attribute_name)
+            definition = getattr(handler, "_slash_command_definition", None)
+            if definition is None:
+                continue
+            self.register_slash_command(definition.name, handler, definition.description)
 
-
-    def _register_default_commands(self) -> None:
-        """Register built-in slash command handlers."""
-        self._command_handlers['clear'] = self._slash_clear
-        self._command_handlers['save'] = self._slash_save
-        self._command_handlers['load'] = self._slash_load
-        self._command_handlers['help'] = self._slash_help
-
+    @slashcommand("clear", "Clear current session history.")
     def _slash_clear(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         new_history: list[ModelMessage] = []
         self.io.writeln(OTYPE_RESULT, "Session history cleared.")
         return True, new_history
 
+    @slashcommand("save", "Save session history to disk.")
     def _slash_save(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         self.session_manager.save(session_history)
         self.io.writeln(OTYPE_RESULT, "Session saved.")
         return True, session_history
 
+    @slashcommand("load", "Reload session history from disk.")
     def _slash_load(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         new_history = self.session_manager.load()
         self.io.writeln(OTYPE_RESULT, "Session history reloaded.")
         return True, new_history
 
+
+    @slashcommand("history", "Show current session history.")
+    def _slash_history(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        if not session_history:
+            self.io.writeln(OTYPE_RESULT, "Session history is empty.")
+            return True, session_history
+        history_str = "\n".join(
+            f"{i+1}. [{msg}]" for i, msg in enumerate(session_history)
+        )
+        self.io.writeln(OTYPE_RESULT, f"Current session history:\n{history_str}")
+        return True, session_history
+
+    @slashcommand("help", "Show this help.")
     def _slash_help(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
-        self.io.writeln(OTYPE_RESULT, "Available slash commands:\n"
-                                      "  /clear   - Clear current session history.\n"
-                                      "  /save    - Save session history to disk.\n"
-                                      "  /load    - Reload session history from disk.\n"
-                                      "  /help    - Show this help.")
+        commands = "\n".join(
+            f"  /{name:<7} - {description}"
+            for name, description in sorted(self._command_descriptions.items())
+        )
+        self.io.writeln(OTYPE_RESULT, f"Available slash commands:\n{commands}")
         return True, session_history
 
 
@@ -164,9 +199,10 @@ class MagiSession:
         self.io.writeln(OTYPE_RESULT, f"Unknown slash command '{cmd}'. Treating as regular prompt.")
         return False, session_history
 
-    def register_slash_command(self, name: str, handler: Callable[[list[str], list[ModelMessage]], tuple[bool, list[ModelMessage]]]) -> None:
+    def register_slash_command(self, name: str, handler: SlashCommandHandler, description: str = "") -> None:
         """Register a custom slash command handler."""
         self._command_handlers[name] = handler
+        self._command_descriptions[name] = description
 
     def _try_slash_command(self, prompt: str, session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         """
@@ -253,7 +289,16 @@ class MagiSession:
         return session_history
 
 
+    async def run(self, prompt: str | None = None, isatty: bool=False) -> None:
+        """Run the session in either interactive or non-interactive mode."""
+
+        if prompt is not None:
+            await self.run_non_interactive(prompt)
+        else:
+            await self.run_interactive()
+
     async def run_interactive(self) -> None:
+        """Run an interactive session, prompting the user for input until they exit."""
         session_history = self.session_manager.load()
 
         while True:
@@ -269,3 +314,8 @@ class MagiSession:
         self.session_manager.save(session_history)
         await asyncio.sleep(.5)
 
+    async def run_non_interactive(self, prompt: str) -> None:
+        """Run a single prompt without interactive input, then exit."""
+        session_history = self.session_manager.load()
+        session_history = await self._run_prompt(prompt, session_history)
+        self.session_manager.save(session_history)

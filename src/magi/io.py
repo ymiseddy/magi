@@ -101,6 +101,20 @@ class ReaderWriter(InputOutput):
     def console_always_approve() -> "ReaderWriter":
         return ReaderWriter(ConsoleInputter(), ConsoleOutputter(), AlwaysApprove())
 
+    @staticmethod
+    def non_interactive() -> "ReaderWriter":
+        return ReaderWriter(FailInputter(), ConsoleOutputter(), FailApprover())
+
+class FailInputter(Reader):
+    @override
+    def read(self) -> str|None:
+        raise RuntimeError("Input is not supported in this context.")
+
+class FailApprover(Approver):
+    @override
+    def readapproval(self) -> bool:
+        raise RuntimeError("Approval is not supported in this context.")
+
 class ConsoleInputter(Reader):
     @override
     def read(self) -> str|None:

@@ -170,8 +170,6 @@ class OpenAIAgentBuilder:
 
             toolsets.append(skill_toolset)
 
-        #toolsets = [self._skill_toolset] if self._skill_toolset is not None else []
-
         if self._tools:
             builtin_toolset = FunctionToolset()
             for tool in self._tools:

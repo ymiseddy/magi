@@ -104,26 +104,32 @@ def build_agent(args: CommandArguments, config: dict[str, object]) -> Agent:
     system_prompt = _resolve_system_prompt(args, config)
     from .agent_builder import OpenAIAgentBuilder
 
-    agent = OpenAIAgentBuilder() \
+    builder = OpenAIAgentBuilder() \
         .with_url(_require_str(raw_model, "base_url")) \
         .with_api_key(_require_str(raw_model, "api_key")) \
         .with_system_prompt(system_prompt) \
         .using_model(_require_str(raw_model, "model")) \
         .with_tools() \
-        .maybe_with_skills() \
-        .build()
+        .maybe_with_skills()
+
+    if args.auto_approve:
+        builder = builder.without_tool_approval() \
+                    .without_skill_approval()
+
+
+    agent = builder.build()
     return agent
 
 
-
 class Dependencies:
-    def __init__(self, config: dict[str, object], args: CommandArguments) -> None:
+    def __init__(self, config: dict[str, object], args: CommandArguments, isatty: bool=False) -> None:
         self._config: dict[str, object] = config
         self._args: CommandArguments = args
 
         self._agent: Agent | None = None
         self._io: ReaderWriter | None = None
         self._session_manager: SessionManager | None = None
+        self._isatty = isatty
 
     @property
     def agent(self) -> Agent:
@@ -135,7 +141,10 @@ class Dependencies:
     @property
     def io(self) -> ReaderWriter:
         if self._io is None:
-            self._io = ReaderWriter.console()
+            if not self._isatty:
+                self._io = ReaderWriter.non_interactive()
+            else:
+                self._io = ReaderWriter.console()
 
         return self._io
 
@@ -159,11 +168,18 @@ class Dependencies:
         )
 
 def main() -> None:
+    prompt = None
+    isatty = sys.stdin.isatty() and sys.stdout.isatty()
+    if not isatty:
+        prompt = sys.stdin.read()
+
     _ = dotenv.load_dotenv()
     args = CommandArguments(sys.argv[1:]) 
+    if args.query:
+        prompt = args.query
     cfg = config.load_config()
 
-    deps = Dependencies(cfg, args)
+    deps = Dependencies(cfg, args, isatty)
     magi_session = deps.magi_session
-    asyncio.run(magi_session.run_interactive())
+    asyncio.run(magi_session.run(prompt, isatty))
 
