@@ -7,10 +7,10 @@
 
 
 # If no model is specified from the command line, MAGI will use the model specified here.
-default_model: deepseek-reasoner
+default_model: ollama
 
 # Default key for the system_prompts map below.
-default_system_prompt: default
+default_system_prompt: deepseek
 
 # Define one or more named system prompts. The --system-prompt CLI flag selects a key.
 system_prompts:
@@ -52,6 +52,10 @@ models:
     base_url: https://openrouter.ai/api/v1/
     api_key: ${OPENROUTER_API_KEY}
     model: z-ai/glm-5
+  ollama:
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+    model: qwen3.8:27b
   deepseek-reasoner:
     base_url: https://api.deepseek.com
     api_key: ${DEEPSEEK_API_KEY}

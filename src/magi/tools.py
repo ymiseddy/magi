@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 from pathlib import Path
 
@@ -10,6 +11,28 @@ from pydantic_ai import RunContext
 
 DEFAULT_MAX_READ = 20_000
 
+# Some models (e.g. Qwen) do not reproduce the marker lines byte-for-byte, so we
+# accept any run of three or more marker characters. One or two characters are
+# rejected on purpose: lines like "=" or "==" show up in real file contents
+# (e.g. setext/rST heading underlines) and would be ambiguous with a divider.
+#
+# Optional labels and indentation are tolerated as well, so all of these parse
+# the same way:
+#
+#     <<<<<<< SEARCH            <<<<<<<< SEARCH          <<<<<< search
+#     =======                   =========                ======
+#     >>>>>>> REPLACE           >>>>>>>> Replace         >>>>>>>>>
+#
+# Anything trailing the label is ignored too, since models sometimes repeat the
+# file name (e.g. "<<<<<<< SEARCH src/app.py").
+#
+_SEARCH_START_RE = re.compile(
+    r"^<{3,}[ \t]*(?:(?:SEARCH|ORIGINAL|BEFORE)\b.*)?$", re.IGNORECASE
+)
+_DIVIDER_RE = re.compile(r"^={3,}[ \t]*$")
+_SEARCH_END_RE = re.compile(
+    r"^>{3,}[ \t]*(?:(?:REPLACE|UPDATED|AFTER|NEW|END)\b.*)?$", re.IGNORECASE
+)
 
 async def bash(_: RunContext, command: str) -> str:
     """Run a bash command after getting user approval.
@@ -51,6 +74,18 @@ async def edit_file(_: RunContext, relative_path: str, diff: str) -> str:
     replacement text
     >>>>>>> REPLACE
 
+    The marker lines are parsed leniently: any run of three or more marker
+    characters is accepted, the SEARCH/REPLACE labels are optional and
+    case-insensitive (anything after the label, such as a file name, is
+    ignored), and leading indentation is ignored. So "<<<<<<< SEARCH",
+    "<<<<<<<< search", "<<<<<", "=======", "====", ">>>>>>> REPLACE" and
+    ">>>>>>>>>" are all valid markers.
+
+    Note:
+        A line inside the search section that consists solely of "=" characters
+        is treated as the separator, so avoid matching such a line as the first
+        line of a search block (e.g. setext/Markdown heading underlines).
+
     Args:
         ctx: Run context provided by pydantic-ai (unused, but required).
         relative_path: File path relative to the current working directory.
@@ -89,36 +124,68 @@ async def edit_file(_: RunContext, relative_path: str, diff: str) -> str:
         if not normalized.strip():
             raise ValueError("Diff is empty.")
 
+        def _classify(line: str) -> str | None:
+            """Return the kind of marker this line is, or None for content."""
+            stripped = line.strip()
+            if not stripped:
+                return None
+            if _SEARCH_START_RE.match(stripped):
+                return "start"
+            if _DIVIDER_RE.match(stripped):
+                return "divider"
+            if _SEARCH_END_RE.match(stripped):
+                return "end"
+            return None
+
         state = "await"
         search_buf: list[str] = []
         replace_buf: list[str] = []
         blocks: list[tuple[str, str]] = []
+        block_start = 0
 
-        for line in lines:
-            stripped = line.rstrip("\n")
+        for line_no, line in enumerate(lines, start=1):
+            marker = _classify(line)
             if state == "await":
-                if stripped == "<<<<<<< SEARCH":
+                if marker == "start":
                     state = "search"
                     search_buf = []
-                elif stripped.strip() == "":
-                    continue
-                else:
-                    raise ValueError("Unexpected content before SEARCH marker.")
+                    block_start = line_no
+                elif marker in {"divider", "end"}:
+                    raise ValueError(
+                        f"Line {line_no}: unexpected {marker} marker before any block."
+                    )
+                elif line.strip():
+                    raise ValueError(
+                        f"Line {line_no} has content before the first patch block: {line.strip()!r}"
+                    )
+                # Blank lines between blocks are ignored.
             elif state == "search":
-                if stripped == "=======":
+                if marker == "divider":
                     state = "replace"
                     replace_buf = []
+                elif marker == "end":
+                    raise ValueError(
+                        f"Block at line {block_start}: missing '=======' separator (line {line_no})."
+                    )
                 else:
                     search_buf.append(line)
-            elif state == "replace":
-                if stripped == ">>>>>>> REPLACE":
+            else:  # state == "replace"
+                if marker == "end":
                     blocks.append(("".join(search_buf), "".join(replace_buf)))
                     state = "await"
+                elif marker == "start":
+                    raise ValueError(
+                        f"Block at line {block_start}: missing closing marker (line {line_no})."
+                    )
                 else:
+                    # Extra '=======' lines are treated as literal content so
+                    # that replacements touching heading underlines still work.
                     replace_buf.append(line)
 
         if state != "await":
-            raise ValueError("Incomplete diff block; missing markers.")
+            raise ValueError(
+                f"Block at line {block_start} is incomplete; missing a marker."
+            )
         if not blocks:
             raise ValueError("Diff did not contain any SEARCH/REPLACE blocks.")
 

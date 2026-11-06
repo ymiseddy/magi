@@ -159,7 +159,10 @@ The agent is wired with three built-in tools:
 
 - `bash`: run a shell command
 - `read_file`: read a file from the current project
-- `edit_file`: apply search/replace style edits to a file
+- `edit_file`: apply search/replace style edits to a file. Patch markers are parsed
+  leniently, so any run of three or more `<`, `=` or `>` characters works (labels are
+  optional and case-insensitive), which keeps smaller models like Qwen from failing
+  on an off-by-one marker width
 
 By default, tool calls require approval. Pass `-y` to disable approval prompts for the current run.
 
