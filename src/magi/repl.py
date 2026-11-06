@@ -7,7 +7,7 @@ import shlex
 from collections.abc import AsyncIterator
 from typing import Callable, TypeVar, cast, override
 
-from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
+from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta, ModelResponse
 from watchdog.events import DirCreatedEvent, DirDeletedEvent, DirModifiedEvent, FileCreatedEvent, FileDeletedEvent, FileModifiedEvent, FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent, FileMovedEvent
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
@@ -190,8 +190,20 @@ class MagiRepl:
                 return new_history
             # If not handled, fall through to normal agent processing
 
+            # Quick sanitization pass on your active history
+            if session_history:
+                for msg in session_history:
+                    if isinstance(msg, ModelResponse):
+                        # Look for empty or completely missing text parts accompanying tool calls
+                        if not msg.parts or all(not getattr(part, 'content', None) for part in msg.parts):
+                            # Ensure there is a blank text part to prevent the backend from seeing <nil>
+                            if not any(isinstance(p, TextPart) for p in msg.parts):
+                                msg.parts.insert(0, TextPart(content=""))
+
             if approval_results is not None:
+                print("Approval results", approval_results)
                 event_stream = self.agent.run_stream_events(
+                    "These are the approval results",
                     message_history=session_history,
                     deferred_tool_results=approval_results,
                     output_type=[str, DeferredToolRequests]
@@ -451,10 +463,14 @@ class MagiRepl:
                 previous_mtime = known_mtimes.get(path)
                 known_mtimes[path] = mtime_ns
 
-                if previous_mtime is None or previous_mtime == mtime_ns:
+                if previous_mtime == mtime_ns:
                     continue
 
                 if not self._file_requests_ai(path):
+                    continue
+
+                # Check to see if the filename end with ~, skip if so.
+                if path.name.endswith("~"):
                     continue
 
                 try:

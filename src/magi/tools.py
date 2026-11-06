@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
+import httpx
 from pydantic_ai import RunContext
 
 DEFAULT_MAX_READ = 20_000
@@ -50,7 +53,8 @@ async def bash(_: RunContext, command: str) -> str:
             subprocess.run,
             command,
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             timeout=60,
         )
@@ -61,6 +65,7 @@ async def bash(_: RunContext, command: str) -> str:
 
     if result.returncode != 0:
         return f"Error (exit code {result.returncode}): {result.stderr}"
+    print(result.stdout)
     return result.stdout or "(no output)"
 
 async def edit_file(_: RunContext, relative_path: str, diff: str) -> str:
@@ -280,3 +285,162 @@ async def read_file(_: RunContext, relative_path: str, max_chars: int | None = N
         return f"[truncated to {limit} chars]\n{content[:limit]}"
     return content
 
+
+
+
+
+async def deepseek_search(_: RunContext, query: str, max_results: int = 10) -> str:
+    """Search the web using the DeepSeek Search API.
+
+    This tool calls the DeepSeek `/v1/tools/search` endpoint and returns
+    the search results (URLs, titles, snippets, and optional full content).
+
+    Requires the `DEEPSEEK_API_KEY` environment variable to be set.
+
+    Args:
+        ctx: Run context provided by pydantic-ai (unused, but required).
+        query: The search query string.
+        max_results: Maximum number of search results to return (default 10).
+
+    Returns:
+        A formatted string containing a numbered list of search results
+        (title, URL, snippet, and optional content), or an error message
+        if the request fails.
+    """
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        return "Error: DEEPSEEK_API_KEY environment variable is not set."
+
+    payload: dict[str, object] = {
+        "query": query,
+        "max_results": max_results,
+        "include_content": True,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                "https://api.deepseek.com/v1/tools/search",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+    except httpx.HTTPError as exc:
+        return f"Error calling DeepSeek Search API: {exc}"
+
+    try:
+        data = response.json()
+    except ValueError:
+        return "Error: Could not parse DeepSeek Search API response as JSON."
+
+    if response.status_code != 200:
+        # Error format: { "error": { "code": "...", "message": "..." } }
+        error_info = data.get("error", {})
+        code = error_info.get("code", "unknown")
+        message = error_info.get("message", "")
+        return f"Error: DeepSeek Search API returned status {response.status_code} ({code}): {message}"
+
+    results = data.get("results", [])
+    if not results:
+        return "(no search results returned)"
+
+    lines: list[str] = []
+    for i, result in enumerate(results[:max_results], 1):
+        title = result.get("title", "(no title)")
+        url = result.get("url", "")
+        snippet = result.get("snippet", "")
+        entry = f"{i}. {title}\n   URL: {url}\n   {snippet}"
+        if result.get("content"):
+            entry += f"\n   Content: {result['content']}"
+        lines.append(entry)
+
+    return "\n".join(lines)
+
+
+async def deepseek_fetch(
+    _: RunContext, url: str, max_chars: int | None = None
+) -> str:
+    """Fetch a single web page via the DeepSeek Fetch API.
+
+    This tool calls the DeepSeek `/v1/tools/fetch` endpoint and returns the
+    page content converted to Markdown.
+
+    Requires the `DEEPSEEK_API_KEY` environment variable to be set.
+
+    Args:
+        ctx: Run context provided by pydantic-ai (unused, but required).
+        url: The page URL to fetch. Must be an http(s) URL with a host and
+            must not contain a username or password.
+        max_chars: Maximum number of characters of content to return
+            (defaults to 20k). Pass a negative value for no limit.
+
+    Returns:
+        The page title followed by its Markdown content, or an error message
+        if the request fails.
+    """
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        return "Error: DEEPSEEK_API_KEY environment variable is not set."
+
+    if not isinstance(url, str) or not url.strip():
+        return "Error: url must be a non-empty string."
+    url = url.strip()
+    if len(url) > 8192:
+        return "Error: url must be at most 8192 characters."
+
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"}:
+        return "Error: url must use the http or https scheme."
+    if not parsed.hostname:
+        return "Error: url must include a host."
+    if parsed.username is not None or parsed.password is not None:
+        return "Error: url must not contain a username or password."
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                "https://api.deepseek.com/v1/tools/fetch",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"url": url},
+            )
+    except httpx.HTTPError as exc:
+        return f"Error calling DeepSeek Fetch API: {exc}"
+
+    try:
+        data = response.json()
+    except ValueError:
+        return "Error: Could not parse DeepSeek Fetch API response as JSON."
+
+    if response.status_code != 200:
+        # Error format: { "error": { "code": "...", "message": "..." } }
+        error_info = data.get("error", {}) if isinstance(data, dict) else {}
+        code = error_info.get("code", "unknown")
+        message = error_info.get("message", "")
+        return (
+            f"Error: DeepSeek Fetch API returned status "
+            f"{response.status_code} ({code}): {message}"
+        )
+
+    if not isinstance(data, dict):
+        return "Error: Unexpected DeepSeek Fetch API response shape."
+
+    title = data.get("title") or "(no title)"
+    content = data.get("content") or ""
+    if not content:
+        return f"{title}\n\n(no content could be extracted from the page)"
+
+    limit = DEFAULT_MAX_READ if max_chars is None else max_chars
+    if limit <= 0:
+        return f"{title}\n\n{content}"
+
+    if len(content) > limit:
+        return (
+            f"Title: {title}\n\n"
+            f"[truncated to {limit} chars]\n{content[:limit]}"
+        )
+    return f"Title: {title}\n\n{content}"

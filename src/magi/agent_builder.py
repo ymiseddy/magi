@@ -6,7 +6,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai_skills import SkillsDirectory, SkillsToolset
 
-from .tools import bash, edit_file, read_file
+from .tools import bash, deepseek_fetch, deepseek_search, edit_file, read_file
 
 class OpenAIAgentBuilder:
     def __init__(self) -> None:
@@ -65,12 +65,15 @@ class OpenAIAgentBuilder:
         """
         This method adds a predefined set of tools to the agent. The tools
         included are:
-        - `bash`: A ool for executing bash commands.
+        - `bash`: A tool for executing bash commands.
+        - `deepseek_search`: A tool for web search using the DeepSeek Search API.
+        - `deepseek_fetch`: A tool for fetching a web page as Markdown using the
+          DeepSeek Fetch API.
         - `edit_file`: A tool for editing files.
         - `read_file`: A tool for reading files.
         """
 
-        self._tools = [bash, edit_file, read_file]
+        self._tools = [bash, deepseek_search, deepseek_fetch, edit_file, read_file]
         return self
 
     def maybe_with_skills(self, directories: list[str|Path|SkillsDirectory]|None=None) -> "OpenAIAgentBuilder":
