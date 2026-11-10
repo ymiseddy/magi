@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import asyncio
 import os
 from pathlib import Path
@@ -272,13 +272,17 @@ class MagiRepl:
 
             # Quick sanitization pass on your active history
             if session_history:
-                for msg in session_history:
+                for index, msg in enumerate(session_history):
                     if isinstance(msg, ModelResponse):
                         # Look for empty or completely missing text parts accompanying tool calls
                         if not msg.parts or all(not getattr(part, 'content', None) for part in msg.parts):
-                            # Ensure there is a blank text part to prevent the backend from seeing <nil>
+                            # Ensure there is a blank text part to prevent the backend from seeing <nil>.
+                            # Messages are treated as immutable value objects, so rebuild the
+                            # response instead of mutating `msg.parts` in place.
                             if not any(isinstance(p, TextPart) for p in msg.parts):
-                                msg.parts.insert(0, TextPart(content=""))
+                                session_history[index] = replace(
+                                    msg, parts=[TextPart(content=""), *msg.parts]
+                                )
 
             if approval_results is not None:
                 event_stream = self.agent.run_stream_events(
