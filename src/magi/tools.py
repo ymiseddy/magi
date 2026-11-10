@@ -150,6 +150,13 @@ async def bash(_: RunContext, command: str) -> str:
                 command,
                 shell=True,
                 cwd=cwd,
+                # Never hand the terminal's stdin to the command. An inherited
+                # stdin lets an approved command (cat, head, rg with no path,
+                # git commit opening an editor, ...) read the user's next
+                # answer to the approval prompt, so the prompt appears to need
+                # several `y<enter>` presses. It also makes such a command hang
+                # until COMMAND_TIMEOUT instead of failing fast.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -161,6 +168,8 @@ async def bash(_: RunContext, command: str) -> str:
                 subprocess.run,
                 sandboxed,
                 cwd=cwd,
+                # See above: bwrap does not redirect fd 0 for us.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
