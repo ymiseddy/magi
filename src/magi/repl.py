@@ -71,31 +71,31 @@ class MagiRepl:
     @slashcommand("clear", "Clear current session history.")
     def _slash_clear(self, _args: list[str], _session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         new_history: list[ModelMessage] = []
-        self.io.writeln(OTYPE_RESULT, "Session history cleared.")
+        self.io.writeln(OTYPE_PROMPT, "Session history cleared.")
         return True, new_history
 
     @slashcommand("save", "Save session history to disk.")
     def _slash_save(self, _args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         self.session_manager.save(session_history)
-        self.io.writeln(OTYPE_RESULT, "Session saved.")
+        self.io.writeln(OTYPE_PROMPT, "Session saved.")
         return True, session_history
 
     @slashcommand("load", "Reload session history from disk.")
     def _slash_load(self, _args: list[str], _session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         new_history = self.session_manager.load()
-        self.io.writeln(OTYPE_RESULT, "Session history reloaded.")
+        self.io.writeln(OTYPE_PROMPT, "Session history reloaded.")
         return True, new_history
 
 
     @slashcommand("history", "Show current session history.")
     def _slash_history(self, _args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         if not session_history:
-            self.io.writeln(OTYPE_RESULT, "Session history is empty.")
+            self.io.writeln(OTYPE_PROMPT, "Session history is empty.")
             return True, session_history
         history_str = "\n".join(
             f"{i+1}. [{msg}]" for i, msg in enumerate(session_history)
         )
-        self.io.writeln(OTYPE_RESULT, f"Current session history:\n{history_str}")
+        self.io.writeln(OTYPE_PROMPT, f"Current session history:\n{history_str}")
         return True, session_history
 
     @slashcommand("help", "Show this help.")
@@ -104,30 +104,30 @@ class MagiRepl:
             f"  /{name:<7} - {description}"
             for name, description in sorted(self._command_descriptions.items())
         )
-        self.io.writeln(OTYPE_RESULT, f"Available slash commands:\n{commands}")
+        self.io.writeln(OTYPE_PROMPT, f"Available slash commands:\n{commands}")
         return True, session_history
 
     @slashcommand("models", "List available models.")
     def _slash_models(self, _args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         if not self.available_models:
-            self.io.writeln(OTYPE_RESULT, "No models are configured.")
+            self.io.writeln(OTYPE_PROMPT, "No models are configured.")
             return True, session_history
 
         models = "\n".join(f"  {name}" for name in self.available_models)
-        self.io.writeln(OTYPE_RESULT, f"Available models:\n{models}")
+        self.io.writeln(OTYPE_PROMPT, f"Available models:\n{models}")
         return True, session_history
 
     @slashcommand("prompts", "List available system prompts.")
     def _slash_prompts(self, _args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
         if not self.available_system_prompts:
-            self.io.writeln(OTYPE_RESULT, "No system prompts are configured.")
+            self.io.writeln(OTYPE_PROMPT, "No system prompts are configured.")
             return True, session_history
 
         prompts = "\n".join(
             f"  {name}{' (default)' if name == self.default_system_prompt else ''}"
             for name in self.available_system_prompts
         )
-        self.io.writeln(OTYPE_RESULT, f"Available system prompts:\n{prompts}")
+        self.io.writeln(OTYPE_PROMPT, f"Available system prompts:\n{prompts}")
         return True, session_history
 
 

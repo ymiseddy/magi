@@ -120,7 +120,7 @@ class ReaderWriter(InputOutput):
     @staticmethod
     def non_interactive() -> "ReaderWriter":
         return ReaderWriter(FailInputter(), ConsoleOutputter(), FailApprover())
-    
+
     @staticmethod
     def rich() -> "ReaderWriter":
         return ReaderWriter(ConsoleInputter(), RichConsoleOutputter(), ConsoleApprover())
@@ -183,13 +183,14 @@ class ConsoleOutputter(Writer):
 
 class RichConsoleOutputter(Writer):
 
-    def __init__(self) -> None:
+    def __init__(self, think=True) -> None:
         # First call super
         super().__init__()
         console = Console()
         self._live = Live(console=console, auto_refresh=False) 
         self._markdown_text = ""
         self._started = False
+        self._think = think
 
     def __del__(self) -> None:
         try:
@@ -207,7 +208,7 @@ class RichConsoleOutputter(Writer):
         if otype == OTYPE_PROMPT:
             _ = sys.stderr.write(f"{data}")
             _ = sys.stderr.flush()
-        elif otype != OTYPE_RESULT:
+        elif otype == OTYPE_THINKING and self._think:
             self._maybe_start_live()
             self._markdown_text += data
             markdown_rendered = Markdown(self._markdown_text)
