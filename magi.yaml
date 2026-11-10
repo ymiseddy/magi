@@ -35,9 +35,45 @@ system_prompts:
 # history accross runs.
 session: main
 
-# If auto_approve is set to true, MAGI will automatically approve all tool
-# calls without
-auto_approve: false
+# Tool approval configuration.
+#
+# By default every tool call (and every skill call) is confirmed by the user
+# before it runs. Each tool can be auto-approved individually so safe,
+# read-only tools run without prompting while riskier ones stay gated.
+#
+# Precedence for a single tool, highest first:
+#   1. listed under `require_approval`  -> always prompt
+#   2. listed under `approved_tools`    -> never prompt
+#   3. `auto_approve: true`             -> never prompt (all tools)
+#   4. otherwise                        -> prompt
+#
+# The -y/--auto-approve CLI flag overrides this section entirely.
+#
+# Built-in tool names: bash, read_file, edit_file, deepseek_search,
+# deepseek_fetch. Skill tools can be named here too.
+tool_approval:
+  # Approve every tool call without prompting.
+  auto_approve: false
+
+  # Tools that never require approval. Keep `bash` and `edit_file` out of this
+  # list unless you really want unattended command execution and file edits.
+  approved_tools:
+    - read_file
+    - deepseek_search
+    - deepseek_fetch
+
+  # Tools that always prompt, even when `auto_approve` is true.
+  require_approval:
+    - bash
+    - edit_file
+
+  # Skills require approval by default too; set to true to load skills without
+  # prompting.
+  auto_approve_skills: false
+
+# Legacy: a top level `auto_approve: true` behaves like
+# `tool_approval.auto_approve: true`. Prefer the section above.
+# auto_approve: false
 
 # Model Configurations Currently models only support the OpenAI API Format.
 # Future versions may support additional formats.

@@ -56,7 +56,7 @@ Key config fields:
 - `default_system_prompt`: default key inside `system_prompts`
 - `system_prompts`: named prompts selectable with `-p/--system-prompt`
 - `session`: default session name stored under `.sessions/`
-- `auto_approve`: present in config, but current CLI behavior is driven by `-y/--auto-approve`
+- `tool_approval`: per-tool approval rules (see [Tool Approval](#tool-approval))
 - `models`: map of model aliases to `base_url`, `api_key`, and upstream `model`
 
 ## Usage
@@ -110,6 +110,51 @@ Alternative entrypoints:
 just run -- -q "Hello"
 ```
 
+## Tool Approval
+
+Every tool and skill call is confirmed by the user before it runs. The
+`tool_approval` section of `magi.yaml` lets you auto-approve individual tools so
+harmless ones (reads, searches) run without prompting while destructive ones
+(`bash`, `edit_file`) stay gated:
+
+```yaml
+tool_approval:
+  # Approve every tool call without prompting.
+  auto_approve: false
+
+  # Tools that never require approval.
+  approved_tools:
+    - read_file
+    - deepseek_search
+    - deepseek_fetch
+
+  # Tools that always prompt, even when `auto_approve` is true.
+  require_approval:
+    - bash
+    - edit_file
+
+  # Load skills without prompting (skills are approval-gated by default).
+  auto_approve_skills: false
+```
+
+Precedence for a single tool, highest first:
+
+1. listed under `require_approval` — always prompt
+2. listed under `approved_tools` — never prompt
+3. `auto_approve: true` — never prompt, for all tools
+4. otherwise — prompt
+
+Tool names match the names shown by `/tools`: `bash`, `read_file`,
+`edit_file`, `deepseek_search`, `deepseek_fetch`, plus any skill tool such as
+`load_skill` or `run_skill_script`.
+
+Two things override the config:
+
+- `-y/--auto-approve` on the command line approves every tool and skill call
+  for that run, ignoring `require_approval`.
+- A legacy top-level `auto_approve: true` key behaves like
+  `tool_approval.auto_approve: true`. Prefer the `tool_approval` section.
+
 ## Sessions
 
 Session history is stored in `.sessions/<session>.json`.
@@ -156,7 +201,7 @@ Notes:
 
 ## Built-In Tools
 
-The agent is wired with three built-in tools:
+The agent is wired with these built-in tools:
 
 - `bash`: run a shell command
 - `read_file`: read a file from the current project
@@ -164,8 +209,12 @@ The agent is wired with three built-in tools:
   leniently, so any run of three or more `<`, `=` or `>` characters works (labels are
   optional and case-insensitive), which keeps smaller models like Qwen from failing
   on an off-by-one marker width
+- `deepseek_search`: web search through the DeepSeek Search API
+- `deepseek_fetch`: fetch a web page as Markdown through the DeepSeek Fetch API
 
-By default, tool calls require approval. Pass `-y` to disable approval prompts for the current run.
+By default, tool calls require approval. Auto-approve individual tools with the
+`tool_approval` section of `magi.yaml` (see [Tool Approval](#tool-approval)), or pass
+`-y` to disable approval prompts for the current run.
 
 If a `.skills/` directory exists in the project root, Magi also loads skills from there. It also checks `~/.skills`.
 

@@ -1,5 +1,5 @@
 import sys
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from pydantic_ai import Agent
 
 
@@ -7,6 +7,9 @@ from .repl import MagiRepl
 from .session import FileSessionManager, NoOpSessionManager, SessionManager
 from .io import ReaderWriter
 from .arguments import CommandArguments
+
+if TYPE_CHECKING:
+    from .agent_builder import ToolApprovalPolicy
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant that can perform tasks for the user."
@@ -103,6 +106,45 @@ def _resolve_system_prompt(args: CommandArguments, config: dict[str, object]) ->
 
 
 
+TOOL_APPROVAL_KEYS = frozenset(
+    {"auto_approve", "approved_tools", "require_approval", "auto_approve_skills"}
+)
+
+
+def _resolve_tool_approval_policy(config: dict[str, object]) -> "ToolApprovalPolicy":
+    """
+    Build the per-tool approval policy from the `tool_approval` config section,
+    falling back to the legacy top level `auto_approve` flag. Malformed or
+    misspelled entries are reported so a typo does not silently change nothing.
+    """
+    from .agent_builder import ToolApprovalPolicy
+
+    section = config.get("tool_approval")
+    if section is None:
+        return ToolApprovalPolicy.from_config(config)
+
+    if not isinstance(section, dict):
+        print(
+            "Warning: 'tool_approval' must be a mapping; ignoring it.",
+            file=sys.stderr,
+        )
+        return ToolApprovalPolicy(auto_approve_all=config.get("auto_approve") is True)
+
+    unknown_keys = sorted(
+        key
+        for key in cast(dict[object, object], section)
+        if isinstance(key, str) and key not in TOOL_APPROVAL_KEYS
+    )
+    if unknown_keys:
+        message = (
+            f"Warning: unknown tool_approval key(s) {', '.join(unknown_keys)}; "
+            f"expected one of {', '.join(sorted(TOOL_APPROVAL_KEYS))}."
+        )
+        print(message, file=sys.stderr)
+
+    return ToolApprovalPolicy.from_config(config)
+
+
 class Dependencies:
     def __init__(self, config: dict[str, object], args: CommandArguments, isatty: bool=False) -> None:
         self._config: dict[str, object] = config
@@ -129,18 +171,19 @@ class Dependencies:
         system_prompt = _resolve_system_prompt(self._args, self._config)
         from .agent_builder import OpenAIAgentBuilder
 
+        approval_policy = _resolve_tool_approval_policy(self._config)
+        if self._args.auto_approve:
+            # -y on the command line wins over anything configured in magi.yaml.
+            approval_policy = approval_policy.approve_everything()
+
         builder = OpenAIAgentBuilder() \
             .with_url(_require_str(raw_model, "base_url")) \
             .with_api_key(_require_str(raw_model, "api_key")) \
             .with_system_prompt(system_prompt) \
             .using_model(_require_str(raw_model, "model")) \
+            .with_tool_approval(approval_policy) \
             .with_tools() \
             .maybe_with_skills()
-
-        if self._args.auto_approve:
-            builder = builder.without_tool_approval() \
-                        .without_skill_approval()
-
 
         agent = builder.build()
         return agent

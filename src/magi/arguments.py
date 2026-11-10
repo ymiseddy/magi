@@ -37,7 +37,10 @@ class CommandArguments(argparse.Namespace):
             "-y",
             "--auto-approve",
             action="store_true",
-            help="Automatically approve tool usage without prompting.",
+            help=(
+                "Automatically approve every tool and skill call without prompting. "
+                "Overrides the tool_approval section of magi.yaml."
+            ),
         )
         _ = parser.add_argument(
             "-S",
