@@ -158,7 +158,7 @@ class Dependencies:
             if not self._isatty:
                 self._io = ReaderWriter.non_interactive()
             else:
-                self._io = ReaderWriter.console()
+                self._io = ReaderWriter.rich()
 
         return self._io
 

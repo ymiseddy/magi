@@ -2,6 +2,9 @@
 from abc import ABC, abstractmethod
 import sys
 from typing_extensions import override
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
 
 # Output types
 
@@ -47,6 +50,11 @@ class InputOutput(ABC):
         """Write output data to standard out with a newline."""
         pass
 
+    @abstractmethod
+    def endresult(self) -> None:
+        """End the result output stream."""
+        pass
+
 class Reader(ABC):
     @abstractmethod
     def read(self) -> str|None:
@@ -69,6 +77,10 @@ class Writer(ABC):
         """Write output data to standard out with a newline."""
         pass
 
+    @abstractmethod
+    def endresult(self) -> None:
+        """End the result output stream."""
+        pass
 
 class ReaderWriter(InputOutput):
     def __init__(self, reader: Reader, writer: Writer, approver: Approver) -> None:
@@ -93,6 +105,10 @@ class ReaderWriter(InputOutput):
     def writeln(self, otype: str, data: str) -> None:
         self._writer.writeln(otype, data)
 
+    @override
+    def endresult(self) -> None:
+        self._writer.endresult()
+
     @staticmethod
     def console() -> "ReaderWriter":
         return ReaderWriter(ConsoleInputter(), ConsoleOutputter(), ConsoleApprover())
@@ -104,6 +120,11 @@ class ReaderWriter(InputOutput):
     @staticmethod
     def non_interactive() -> "ReaderWriter":
         return ReaderWriter(FailInputter(), ConsoleOutputter(), FailApprover())
+    
+    @staticmethod
+    def rich() -> "ReaderWriter":
+        return ReaderWriter(ConsoleInputter(), RichConsoleOutputter(), ConsoleApprover())
+
 
 class FailInputter(Reader):
     @override
@@ -154,4 +175,57 @@ class ConsoleOutputter(Writer):
     @override
     def writeln(self, otype: str, data: str) -> None:
         self.write(otype, f"{data}\n")
+
+    @override
+    def endresult(self) -> None:
+        """End the result output stream."""
+        pass
+
+class RichConsoleOutputter(Writer):
+
+    def __init__(self) -> None:
+        # First call super
+        super().__init__()
+        console = Console()
+        self._live = Live(console=console, auto_refresh=False) 
+        self._markdown_text = ""
+        self._started = False
+
+    def __del__(self) -> None:
+        try:
+            self._live.stop()
+        except Exception:
+            pass
+
+    def _maybe_start_live(self) -> None:
+        if not self._started:
+            self._live.start()
+            self._started = True
+
+    @override
+    def write(self, otype: str, data: str) -> None:
+        if otype == OTYPE_PROMPT:
+            _ = sys.stderr.write(f"{data}")
+            _ = sys.stderr.flush()
+        elif otype != OTYPE_RESULT:
+            self._maybe_start_live()
+            self._markdown_text += data
+            markdown_rendered = Markdown(self._markdown_text)
+            self._live.update(markdown_rendered, refresh=True)
+        else:
+            self._markdown_text += data
+            self._maybe_start_live()
+            markdown_rendered = Markdown(self._markdown_text)
+            self._live.update(markdown_rendered, refresh=True)
+
+    @override
+    def writeln(self, otype: str, data: str) -> None:
+        self.write(otype, f"{data}\n")
+
+    @override
+    def endresult(self) -> None:
+        """End the result output stream."""
+        self._live.stop()
+        self._markdown_text = ""
+        self._started = False
 

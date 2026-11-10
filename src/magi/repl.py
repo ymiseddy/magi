@@ -201,15 +201,16 @@ class MagiRepl:
                                 msg.parts.insert(0, TextPart(content=""))
 
             if approval_results is not None:
-                # print("Approval results", approval_results)
+                print("Approval results", approval_results)
                 event_stream = self.agent.run_stream_events(
-                    # "Approval results:",
+                    "approval results",
                     message_history=session_history,
                     deferred_tool_results=approval_results,
                     output_type=[str, DeferredToolRequests]
                 )
                 pass
             else:
+                print("Prompt", prompt)
                 event_stream = self.agent.run_stream_events(
                     prompt, 
                     message_history=session_history,
@@ -242,6 +243,7 @@ class MagiRepl:
                     case AgentRunResultEvent() as agent_run_result:
                         result = agent_run_result.result
                         output = result.output
+                        self.io.endresult()
                         if isinstance(output, DeferredToolRequests):
                             complete = False
                             approval_results = self._get_approvals(output)
