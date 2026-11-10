@@ -1,4 +1,6 @@
 import sys
+from collections.abc import Iterable
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from pydantic_ai import Agent
 
@@ -7,6 +9,15 @@ from .repl import MagiRepl
 from .session import FileSessionManager, NoOpSessionManager, SessionManager
 from .io import ReaderWriter
 from .arguments import CommandArguments
+from .sandbox import (
+    MODE_AUTO,
+    MODE_REQUIRE,
+    MODES,
+    SandboxSettings,
+    available as sandbox_available,
+    configure as configure_sandbox,
+    settings as sandbox_settings,
+)
 
 if TYPE_CHECKING:
     from .agent_builder import ToolApprovalPolicy
@@ -39,6 +50,19 @@ def _object_dict(value: object) -> dict[str, object] | None:
         if isinstance(key, str):
             result[key] = item
     return result
+
+
+def _string_list(value: object) -> list[str]:
+    """Normalize a YAML list of strings, ignoring non-string entries."""
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return []
+    return [
+        item
+        for item in cast(Iterable[object], value)
+        if isinstance(item, str) and item.strip()
+    ]
 
 
 def _available_model_names(config: dict[str, object]) -> list[str]:
@@ -145,6 +169,55 @@ def _resolve_tool_approval_policy(config: dict[str, object]) -> "ToolApprovalPol
     return ToolApprovalPolicy.from_config(config)
 
 
+SANDBOX_KEYS = frozenset({"mode", "network", "writable_paths"})
+
+
+def _resolve_sandbox_settings(config: dict[str, object]) -> SandboxSettings:
+    """
+    Build the sandbox settings from the `sandbox` config section. Unknown keys
+    and bad values are reported and fall back to the defaults, so a typo cannot
+    silently change how commands are executed.
+    """
+    raw_section = config.get("sandbox")
+    if raw_section is None:
+        return SandboxSettings()
+
+    section = _object_dict(raw_section)
+    if section is None:
+        print("Warning: 'sandbox' must be a mapping; ignoring it.", file=sys.stderr)
+        return SandboxSettings()
+
+    unknown_keys = sorted(key for key in section if key not in SANDBOX_KEYS)
+    if unknown_keys:
+        print(
+            f"Warning: unknown sandbox key(s) {', '.join(unknown_keys)}; expected "
+            + f"one of {', '.join(sorted(SANDBOX_KEYS))}.",
+            file=sys.stderr,
+        )
+
+    mode_raw = section.get("mode", MODE_AUTO)
+    mode = MODE_AUTO
+    if isinstance(mode_raw, str) and mode_raw.strip().lower() in MODES:
+        mode = mode_raw.strip().lower()
+    else:
+        print(
+            f"Warning: sandbox.mode must be one of {', '.join(MODES)}; using "
+            + f"'{MODE_AUTO}'.",
+            file=sys.stderr,
+        )
+
+    network_raw = section.get("network", True)
+    network = network_raw is not False
+
+    writable_paths = tuple(
+        Path(entry).expanduser() for entry in _string_list(section.get("writable_paths"))
+    )
+
+    return SandboxSettings(
+        mode=mode, network=network, writable_paths=writable_paths
+    )
+
+
 class Dependencies:
     def __init__(self, config: dict[str, object], args: CommandArguments, isatty: bool=False) -> None:
         self._config: dict[str, object] = config
@@ -175,6 +248,14 @@ class Dependencies:
         if self._args.auto_approve:
             # -y on the command line wins over anything configured in magi.yaml.
             approval_policy = approval_policy.approve_everything()
+
+        configure_sandbox(_resolve_sandbox_settings(self._config))
+        if sandbox_settings().mode == MODE_REQUIRE and not sandbox_available():
+            print(
+                "Warning: sandbox.mode is 'require' but bubblewrap is unavailable; "
+                + "bash calls will refuse to run. Install bwrap or use mode: auto.",
+                file=sys.stderr,
+            )
 
         builder = OpenAIAgentBuilder() \
             .with_url(_require_str(raw_model, "base_url")) \

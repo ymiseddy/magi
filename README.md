@@ -141,12 +141,14 @@ Precedence for a single tool, highest first:
 
 1. listed under `require_approval` — always prompt
 2. listed under `approved_tools` — never prompt
-3. `auto_approve: true` — never prompt, for all tools
-4. otherwise — prompt
+3. safe by construction — never prompt (`bash_readonly`, see
+   [Read-Only Shell](#read-only-shell))
+4. `auto_approve: true` — never prompt, for all tools
+5. otherwise — prompt
 
-Tool names match the names shown by `/tools`: `bash`, `read_file`,
-`edit_file`, `deepseek_search`, `deepseek_fetch`, plus any skill tool such as
-`load_skill` or `run_skill_script`.
+Tool names match the names shown by `/tools`: `bash`, `bash_readonly`,
+`read_file`, `edit_file`, `deepseek_search`, `deepseek_fetch`, plus any skill
+tool such as `load_skill` or `run_skill_script`.
 
 Two things override the config:
 
@@ -154,6 +156,64 @@ Two things override the config:
   for that run, ignoring `require_approval`.
 - A legacy top-level `auto_approve: true` key behaves like
   `tool_approval.auto_approve: true`. Prefer the `tool_approval` section.
+
+## Read-Only Shell
+
+`bash_readonly` is for inspection: reading files, searching, listing, and
+read-only `git`. It never asks for approval because it cannot change anything.
+
+The catch with "is this bash command safe?" is that any check on the string is
+a guess about how a *second* parser (`sh -c`) will read it. `shlex.split`
+turns `echo hi; rm -rf /` into `["echo", "hi;", ...]` and `c\\at f` into
+`["cat", "f"]`, so an `argv[0]` check approves exactly the wrong things. So
+`bash_readonly` does not parse-and-hope: it tokenises the command itself,
+validates it, and then executes an argv list with `shell=False`. No shell ever
+sees the input, so what runs is what was checked.
+
+Accepted:
+
+- One pipeline of up to 5 stages joined with `|`.
+- Read-only programs: `cat`, `head`, `tail`, `wc`, `ls`, `tree`, `stat`,
+  `file`, `du`, `df`, `nl`, `cut`, `tr`, `sort`, `uniq`, `grep`, `rg`, `find`,
+  `diff`, `jq`, checksums, `od`, `strings`, `column`, `date`, `uname`,
+  `which`, `pwd`, `echo`, and read-only `git` (`log`, `show`, `diff`,
+  `status`, `blame`, `grep`, `ls-files`, `rev-parse`, `describe`, ...).
+- Paths inside the project. Absolute paths, `..` escapes, `~` and symlinks
+  pointing out of the project are refused, so a "harmless" `cat` cannot read
+  `~/.ssh/id_rsa`.
+
+Refused, with a message explaining the alternative: `;`, `&&`, `||`,
+redirects, `$(...)`, backticks, `$VAR`, unquoted globs, `cd`, environment
+prefixes (`FOO=bar cmd`), anything not on the allowlist (`rm`, `sed -i`,
+`xargs`, `curl`, `python`, `bash`, ...), flag forms that write or exec (`sort
+-o`, `find -delete`/`-exec`, `rg --pre`, `uniq FILE OUT`, `tail -f`,
+`git -c`), and `git` subcommands that change the repository.
+
+Quotes are literal and passed straight to the program, which is what makes
+`rg -g '*.py' needle` work: the glob reaches ripgrep untouched.
+
+## Sandbox
+
+`bash` can additionally run inside [bubblewrap](https://github.com/containers/bubblewrap):
+the project directory is writable, everything else is read-only, and `$HOME`
+points at a throwaway directory. `bash_readonly` always uses the sandbox when
+it is available, without network access, as a second line of defence behind
+the allowlist.
+
+```yaml
+sandbox:
+  mode: auto      # auto | require | off
+  network: true   # network for `bash`; `bash_readonly` never gets it
+  writable_paths: []   # extra directories to bind read-write
+```
+
+`auto` sandboxes when `bwrap` is present and runs unsandboxed otherwise,
+`require` refuses to run `bash` at all without it, and `off` disables the
+sandbox everywhere (the `bash_readonly` allowlist still applies).
+
+The sandbox limits blast radius; it is not a permission system. Approved
+commands still execute for real, so `mode: off` restores the previous
+behaviour exactly.
 
 ## Sessions
 
@@ -204,6 +264,8 @@ Notes:
 The agent is wired with these built-in tools:
 
 - `bash`: run a shell command
+- `bash_readonly`: run an allowlisted read-only command without a shell and
+  without approval (see [Read-Only Shell](#read-only-shell))
 - `read_file`: read a file from the current project
 - `edit_file`: apply search/replace style edits to a file. Patch markers are parsed
   leniently, so any run of three or more `<`, `=` or `>` characters works (labels are

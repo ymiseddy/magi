@@ -44,13 +44,18 @@ session: main
 # Precedence for a single tool, highest first:
 #   1. listed under `require_approval`  -> always prompt
 #   2. listed under `approved_tools`    -> never prompt
-#   3. `auto_approve: true`             -> never prompt (all tools)
-#   4. otherwise                        -> prompt
+#   3. safe by construction             -> never prompt (bash_readonly)
+#   4. `auto_approve: true`             -> never prompt (all tools)
+#   5. otherwise                        -> prompt
 #
 # The -y/--auto-approve CLI flag overrides this section entirely.
 #
-# Built-in tool names: bash, read_file, edit_file, deepseek_search,
-# deepseek_fetch. Skill tools can be named here too.
+# Built-in tool names: bash, bash_readonly, read_file, edit_file,
+# deepseek_search, deepseek_fetch. Skill tools can be named here too.
+#
+# `bash_readonly` runs commands from a read-only allowlist (cat, ls, rg,
+# grep, find, git log/show/diff, ...) without a shell and inside a sandbox,
+# so it does not prompt unless you list it under `require_approval` below.
 tool_approval:
   # Approve every tool call without prompting.
   auto_approve: false
@@ -74,6 +79,33 @@ tool_approval:
 # Legacy: a top level `auto_approve: true` behaves like
 # `tool_approval.auto_approve: true`. Prefer the section above.
 # auto_approve: false
+
+# Shell sandbox configuration.
+#
+# The `bash` tool can run its commands inside bubblewrap: the project
+# directory is writable, the rest of the filesystem is read-only, and `$HOME`
+# points at a throwaway directory unless you bind the real one below. This is
+# a blast-radius limit, not a permission system - commands still need
+# approval, and approval is what decides whether they run at all.
+#
+# `bash_readonly` uses the sandbox too, always without network access, so its
+# allowlist has a second line of defence. Set `mode: off` to disable
+# sandboxing everywhere (the allowlist still applies to bash_readonly).
+sandbox:
+  # auto    - sandbox when bwrap is installed, otherwise run unsandboxed
+  # require - refuse to run bash at all when bwrap is unavailable
+  # off     - never sandbox
+  mode: auto
+
+  # Allow network access inside the sandbox for the `bash` tool. The
+  # read-only tool never gets the network.
+  network: true
+
+  # Extra directories to bind read-write inside the sandbox, for example a
+  # cache or a sibling repository. Binding your home directory disables most
+  # of the protection; prefer specific paths.
+  # writable_paths:
+  #   - ~/.cache
 
 # Model Configurations Currently models only support the OpenAI API Format.
 # Future versions may support additional formats.

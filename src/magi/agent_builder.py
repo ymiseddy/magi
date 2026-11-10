@@ -8,7 +8,21 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai_skills import SkillsDirectory, SkillsToolset
 
-from .tools import bash, deepseek_fetch, deepseek_search, edit_file, read_file
+from .tools import (
+    bash,
+    bash_readonly,
+    deepseek_fetch,
+    deepseek_search,
+    edit_file,
+    read_file,
+)
+
+#: Tools that are auto-approved because they are safe by construction rather
+#: than by configuration. `bash_readonly` validates its argv against a
+#: read-only allowlist (`magi.safe_shell`) and runs it without a shell, so it
+#: cannot write, install or execute anything. Listing one of these under
+#: `require_approval` still forces a prompt.
+SAFE_BY_DESIGN_TOOLS: frozenset[str] = frozenset({"bash_readonly"})
 
 
 def _string_list(value: object) -> list[str]:
@@ -32,8 +46,9 @@ class ToolApprovalPolicy:
 
     1. the tool is listed in ``require_approval`` -> approval required
     2. the tool is listed in ``approved_tools`` -> approval not required
-    3. ``auto_approve`` is true -> approval not required
-    4. otherwise -> approval required
+    3. the tool is in ``SAFE_BY_DESIGN_TOOLS`` -> approval not required
+    4. ``auto_approve`` is true -> approval not required
+    5. otherwise -> approval required
     """
 
     auto_approve_all: bool = False
@@ -71,6 +86,8 @@ class ToolApprovalPolicy:
         if tool_name in self.require_approval_tools:
             return True
         if tool_name in self.approved_tools:
+            return False
+        if tool_name in SAFE_BY_DESIGN_TOOLS:
             return False
         return not self.auto_approve_all
 
@@ -191,6 +208,8 @@ class OpenAIAgentBuilder:
         This method adds a predefined set of tools to the agent. The tools
         included are:
         - `bash`: A tool for executing bash commands.
+        - `bash_readonly`: A tool for running allowlisted read-only commands
+          without approval and without a shell.
         - `deepseek_search`: A tool for web search using the DeepSeek Search API.
         - `deepseek_fetch`: A tool for fetching a web page as Markdown using the
           DeepSeek Fetch API.
@@ -198,7 +217,14 @@ class OpenAIAgentBuilder:
         - `read_file`: A tool for reading files.
         """
 
-        self._tools = [bash, deepseek_search, deepseek_fetch, edit_file, read_file]
+        self._tools = [
+            bash,
+            bash_readonly,
+            deepseek_search,
+            deepseek_fetch,
+            edit_file,
+            read_file,
+        ]
         return self
 
     def maybe_with_skills(self, directories: list[str|Path|SkillsDirectory]|None=None) -> "OpenAIAgentBuilder":

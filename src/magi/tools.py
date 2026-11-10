@@ -6,13 +6,31 @@ import asyncio
 import os
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
+from typing import IO
 from urllib.parse import urlsplit
 
 import httpx
 from pydantic_ai import RunContext
 
+from .safe_shell import RejectedCommand, validate_command
+from .sandbox import (
+    SandboxUnavailable,
+    settings as sandbox_settings,
+    wrap as sandbox_wrap,
+)
+
 DEFAULT_MAX_READ = 20_000
+
+#: Seconds any single shell tool call may run for.
+COMMAND_TIMEOUT = 60
+
+#: Exit code used for a timed-out pipeline (same convention as coreutils).
+_TIMEOUT_EXIT = 124
+
+#: Programs whose exit code 1 means "nothing matched", not "it broke".
+_NO_MATCH_PROGRAMS = frozenset({"rg", "grep", "egrep", "fgrep"})
 
 # Some models (e.g. Qwen) do not reproduce the marker lines byte-for-byte, so we
 # accept any run of three or more marker characters. One or two characters are
@@ -37,8 +55,75 @@ _SEARCH_END_RE = re.compile(
     r"^>{3,}[ \t]*(?:(?:REPLACE|UPDATED|AFTER|NEW|END)\b.*)?$", re.IGNORECASE
 )
 
+def _format_output(output: str, limit: int = DEFAULT_MAX_READ) -> str:
+    """Trim trailing blank lines and truncate very long output."""
+    text = output.rstrip("\n")
+    if not text.strip():
+        return "(no output)"
+    if len(text) > limit:
+        return f"[truncated to {limit} chars]\n{text[:limit]}"
+    return text
+
+
+def _run_pipeline(stages: Sequence[Sequence[str]], cwd: Path) -> tuple[int, str]:
+    """Run validated pipeline stages, piping each stdout into the next stdin.
+
+    Only the last stage's stderr is captured (merged into its stdout) so that
+    one command's diagnostics cannot be mistaken for another's data.
+
+    Args:
+        stages: One argv list per stage, already validated and sandbox-wrapped.
+        cwd: Working directory for every stage.
+
+    Returns:
+        ``(exit code, output)`` where a timeout is reported as
+        :data:`_TIMEOUT_EXIT`.
+    """
+    processes: list[subprocess.Popen[str]] = []
+    previous: IO[str] | None = None
+    try:
+        for index, argv in enumerate(stages):
+            last = index == len(stages) - 1
+            process = subprocess.Popen(
+                list(argv),
+                cwd=cwd,
+                stdin=previous if previous is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT if last else subprocess.DEVNULL,
+                text=True,
+                errors="replace",
+            )
+            if previous is not None:
+                previous.close()
+            previous = process.stdout
+            processes.append(process)
+
+        try:
+            output, _ = processes[-1].communicate(timeout=COMMAND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            for process in processes:
+                _ = process.kill()
+            for process in processes:
+                _ = process.wait()
+            return _TIMEOUT_EXIT, ""
+        return processes[-1].returncode, output or ""
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                _ = process.kill()
+                _ = process.wait()
+        if previous is not None and not previous.closed:
+            previous.close()
+
+
 async def bash(_: RunContext, command: str) -> str:
     """Run a bash command after getting user approval.
+
+    The command is passed to `/bin/sh -c`, so anything the shell supports is
+    available: pipes, redirects, variables, command substitution. When
+    `sandbox.mode` in `magi.yaml` allows it, the command runs inside a
+    bubblewrap sandbox with the project directory writable and the rest of the
+    filesystem read-only.
 
     Args:
         ctx: Run context provided by pydantic-ai (unused, but required).
@@ -47,25 +132,117 @@ async def bash(_: RunContext, command: str) -> str:
     Returns:
         The output of the command, or a message if denied/error.
     """
+    cwd = Path.cwd()
+    inner = ["/bin/sh", "-c", command]
+    try:
+        sandboxed = sandbox_wrap(
+            inner,
+            cwd=cwd,
+            writable=(cwd, *sandbox_settings().writable_paths),
+        )
+    except SandboxUnavailable as exc:
+        return f"Error: {exc}"
 
     try:
-        result = await asyncio.to_thread(
-            subprocess.run,
-            command,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=60,
-        )
+        if sandboxed is None:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                command,
+                shell=True,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+                timeout=COMMAND_TIMEOUT,
+            )
+        else:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                sandboxed,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+                timeout=COMMAND_TIMEOUT,
+            )
     except subprocess.TimeoutExpired:
-        return "Command timed out after 60 seconds."
+        return f"Command timed out after {COMMAND_TIMEOUT} seconds."
     except Exception as exc:  # pragma: no cover - pass unexpected failure upstream
         return f"Error running command: {exc}"
 
     if result.returncode != 0:
-        return f"Error (exit code {result.returncode}): {result.stderr}"
-    return result.stdout or "(no output)"
+        return f"Error (exit code {result.returncode}):\n{result.stdout or ''}"
+    return _format_output(result.stdout or "")
+
+
+async def bash_readonly(_: RunContext, command: str) -> str:
+    """Run a read-only command and return its output. No approval needed.
+
+    This tool does not need approval because it cannot change anything: there is
+    no shell, no redirects, no writes, and no network. Prefer it over `bash` for
+    inspecting a project, and reach for `bash` (which asks the user) only when
+    something must actually be modified, installed or executed.
+
+    Supported programs include: cat, head, tail, wc, ls, tree, stat, file, du,
+    df, nl, cut, tr, sort, uniq, grep, rg, find, diff, jq, the checksums,
+    od, hexdump, strings, column, date, uname, which, pwd, echo, printf and
+    git log/show/diff/status/blame/grep/ls-files/rev-parse/describe.
+
+    Syntax limits (violating any of them returns a "Refused" message):
+      - One pipeline of up to 5 stages joined by `|`; no `;`, `&&`, `||`.
+      - No redirects (`>`, `>>`, `<`), no `$(...)` or backticks, no `$VAR`.
+      - No unquoted globs or `~`: quote patterns for the program itself, e.g.
+        `rg -g '*.py' needle`, and stay inside the project directory.
+      - Paths must resolve inside the project, so no `/etc`, no `~/.ssh`.
+      - `git` only reads: no checkout/reset/commit/push/clean/stash/apply.
+
+    Runs inside a read-only sandbox when bubblewrap is available.
+
+    Args:
+        ctx: Run context provided by pydantic-ai (unused, but required).
+        command: The read-only command to execute.
+
+    Returns:
+        The output of the command, a "Refused: ..." explanation when the
+        command is not provably read-only, or a message on error.
+    """
+    root = Path.cwd()
+    try:
+        stages = validate_command(command, root)
+    except RejectedCommand as exc:
+        return (
+            f"Refused: {exc}\n"
+            "Nothing was run. Adjust the command, or use bash (which requires "
+            "user approval) if you really need it."
+        )
+
+    wrapped: list[list[str]] = []
+    for argv in stages:
+        try:
+            sandboxed = sandbox_wrap(argv, cwd=root, network=False, clean_env=True)
+        except SandboxUnavailable as exc:
+            return f"Error: {exc}"
+        wrapped.append(sandboxed if sandboxed is not None else argv)
+
+    try:
+        returncode, output = await asyncio.to_thread(_run_pipeline, wrapped, root)
+    except Exception as exc:  # pragma: no cover - surface unexpected failures
+        return f"Error running command: {exc}"
+
+    if returncode == _TIMEOUT_EXIT:
+        return f"Command timed out after {COMMAND_TIMEOUT} seconds."
+
+    program = os.path.basename(stages[-1][0])
+    if returncode == 1 and program in _NO_MATCH_PROGRAMS:
+        return _format_output(output) if output.strip() else "(no matches)"
+    if returncode == 1 and program == "diff":
+        # diff exits 1 when the inputs differ, which is a normal answer.
+        return _format_output(output)
+    if returncode != 0:
+        return f"Error (exit code {returncode}):\n{_format_output(output)}"
+    return _format_output(output)
 
 async def edit_file(_: RunContext, relative_path: str, diff: str) -> str:
     """Apply a SEARCH/REPLACE style patch to a file within the project directory.
