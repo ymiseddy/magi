@@ -139,7 +139,13 @@ class FailApprover(Approver):
 class ConsoleInputter(Reader):
     @override
     def read(self) -> str|None:
-        res = input()
+        try:
+            res = input()
+        except EOFError:
+            # Ctrl-D (or a closed stdin) ends the input stream: report it the
+            # same way an empty line is reported so the REPL exits cleanly
+            # instead of dying with a traceback.
+            return None
         if res == "":
             return None
         return res
@@ -148,7 +154,17 @@ class ConsoleApprover(Approver):
     @override
     def readapproval(self) -> bool:
         while True:
-            response = input().strip().lower()
+            try:
+                response = input().strip().lower()
+            except EOFError:
+                # No answer can ever arrive now. Approval is a safety gate, so
+                # fail closed and deny rather than letting EOFError escape as a
+                # traceback from inside the agent loop.
+                print(
+                    "\nNo input available; treating this approval as denied.",
+                    file=sys.stderr,
+                )
+                return False
             if response in ("y", "yes"):
                 return True
             elif response in ("n", "no"):

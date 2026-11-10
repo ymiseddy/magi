@@ -235,7 +235,12 @@ Available in-chat slash commands:
 - `/history`
 - `/save`
 - `/load`
+- `/export [path]`
 - `/clear`
+
+`/export` writes the text of the most recent agent response to a Markdown
+file. Pass a path as the argument (`.md` is appended when no extension is
+given); it defaults to `response.md` in the current directory.
 
 ## Watch Mode
 

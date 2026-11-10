@@ -12,7 +12,7 @@ from watchdog.events import DirCreatedEvent, DirDeletedEvent, DirModifiedEvent, 
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver
 
-from magi.io import OTYPE_PROMPT, OTYPE_RESULT, OTYPE_THINKING, ReaderWriter
+from magi.io import OTYPE_ERROR, OTYPE_PROMPT, OTYPE_RESULT, OTYPE_THINKING, ReaderWriter
 from magi.session import SessionManager
 
 SlashCommandHandler = Callable[[list[str], list[ModelMessage]], tuple[bool, list[ModelMessage]]]
@@ -72,6 +72,9 @@ class MagiRepl:
         self.default_system_prompt: str | None = default_system_prompt
         self._command_handlers: dict[str, SlashCommandHandler] = {}
         self._command_descriptions: dict[str, str] = {}
+        # The text of the most recent agent response, kept in memory so it can
+        # be exported to a file with `/export`.
+        self._last_result: str | None = None
         self._register_decorated_commands()
 
     def _register_decorated_commands(self) -> None:
@@ -104,6 +107,30 @@ class MagiRepl:
         new_history = self.session_manager.load()
         self.io.writeln(OTYPE_PROMPT, "Session history reloaded.")
         return True, new_history
+
+    @slashcommand("export", "Write the most recent response to a Markdown file.")
+    def _slash_export(self, args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        if self._last_result is None:
+            self.io.writeln(OTYPE_PROMPT, "No response to export yet.")
+            return True, session_history
+
+        filename = args[0] if args else "response.md"
+        path = Path(filename)
+        if path.suffix == "":
+            path = path.with_suffix(".md")
+
+        content = self._last_result
+        if not content.endswith("\n"):
+            content += "\n"
+
+        try:
+            _ = path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            self.io.writeln(OTYPE_ERROR, f"Failed to write {path}: {exc}")
+            return True, session_history
+
+        self.io.writeln(OTYPE_PROMPT, f"Wrote most recent response to {path}.")
+        return True, session_history
 
 
     @slashcommand("history", "Show current session history.")
@@ -324,6 +351,8 @@ class MagiRepl:
                     case AgentRunResultEvent() as agent_run_result:
                         result = agent_run_result.result
                         output = result.output
+                        if isinstance(output, str):
+                            self._last_result = output
                         self.io.endresult()
                         if isinstance(output, DeferredToolRequests):
                             complete = False
