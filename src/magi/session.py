@@ -58,7 +58,6 @@ class FileSessionManager(SessionManager):
         """Load session history from disk, falling back to a legacy location."""
 
         path = self._session_history_path()
-        print(path)
         if not os.path.exists(path):
             return []
 

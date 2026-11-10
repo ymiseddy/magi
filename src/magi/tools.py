@@ -65,7 +65,6 @@ async def bash(_: RunContext, command: str) -> str:
 
     if result.returncode != 0:
         return f"Error (exit code {result.returncode}): {result.stderr}"
-    print(result.stdout)
     return result.stdout or "(no output)"
 
 async def edit_file(_: RunContext, relative_path: str, diff: str) -> str:
