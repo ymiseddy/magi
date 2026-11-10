@@ -1,6 +1,8 @@
 import asyncio
 import sys
 from collections.abc import Coroutine
+from pathlib import Path
+
 import dotenv
 
 
@@ -27,7 +29,14 @@ def main() -> None:
     args = CommandArguments(sys.argv[1:]) 
     if args.query:
         prompt = args.query
-    cfg = config.load_config()
+    if args.config:
+        config_path = Path(args.config).expanduser()
+        if not config_path.is_file():
+            print(f"Error: config file not found: {config_path}", file=sys.stderr)
+            raise SystemExit(1)
+        cfg = config.load_config([str(config_path)])
+    else:
+        cfg = config.load_config()
 
     deps = Dependencies(cfg, args, isatty)
     magi_session = deps.magi_session

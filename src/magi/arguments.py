@@ -13,6 +13,7 @@ class CommandArguments(argparse.Namespace):
     query: str|None=None
     model: str|None=None
     system_prompt: str|None=None
+    config: str|None=None
 
     def __init__(self, Arguments:Arguments=None):
         super().__init__()
@@ -70,6 +71,18 @@ class CommandArguments(argparse.Namespace):
             type=str,
             default=None,
             help="Key of the system prompt defined under system_prompts in magi.yaml.",
+        )
+
+        _ = parser.add_argument(
+            "-c",
+            "--config",
+            type=str,
+            default=None,
+            help=(
+                "Path to a custom magi.yaml file. When provided, this file is used "
+                "instead of the default config files discovered in the current "
+                "directory, ~/.config/magi/, and the package directory."
+            ),
         )
 
         _ = parser.add_argument(
