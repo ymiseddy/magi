@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import shlex
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Callable, TypeVar, cast, override
 
 from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, DeferredToolRequests, DeferredToolResults, ModelMessage, PartStartEvent, PartDeltaEvent, TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta, ModelResponse
@@ -33,6 +33,25 @@ def slashcommand(name: str, description: str) -> Callable[[F], F]:
         return func
 
     return decorator
+
+
+def _summarize_tool_description(description: str) -> str:
+    """Reduce a tool's description to a single short line for `/tools` output."""
+    text = description.strip()
+    if not text:
+        return "(no description)"
+
+    # pydantic-ai renders Google-style docstrings as "<summary>...</summary>".
+    if text.startswith("<summary>"):
+        text = text[len("<summary>"):]
+        end = text.find("</summary>")
+        if end != -1:
+            text = text[:end]
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "(no description)"
+    return lines[0]
 
 
 class MagiRepl:
@@ -130,6 +149,67 @@ class MagiRepl:
         self.io.writeln(OTYPE_PROMPT, f"Available system prompts:\n{prompts}")
         return True, session_history
 
+    @slashcommand("tools", "List tools available to the agent.")
+    def _slash_tools(self, _args: list[str], session_history: list[ModelMessage]) -> tuple[bool, list[ModelMessage]]:
+        tools = self._collect_agent_tools()
+        if not tools:
+            self.io.writeln(OTYPE_PROMPT, "No tools are configured.")
+            return True, session_history
+
+        width = max(len(name) for name, _, _ in tools)
+        lines: list[str] = []
+        for name, description, requires_approval in tools:
+            suffix = " (requires approval)" if requires_approval else ""
+            lines.append(f"  {name:<{width}} - {description}{suffix}")
+
+        self.io.writeln(OTYPE_PROMPT, "Available tools:\n" + "\n".join(lines))
+        return True, session_history
+
+    def _collect_agent_tools(self) -> list[tuple[str, str, bool]]:
+        """Collect the tools the agent exposes through its toolsets.
+
+        Wrapper and combined toolsets are traversed, so tools registered via a
+        `FunctionToolset`, via skills, or behind approval wrappers are all
+        included.
+
+        Returns:
+            Sorted ``(name, short description, requires approval)`` tuples.
+        """
+        collected: dict[str, tuple[str, bool]] = {}
+
+        def visit(toolset: object, approval_forced: bool = False) -> None:
+            wrapped = getattr(toolset, "wrapped", None)
+            if wrapped is not None:
+                forced = approval_forced or type(toolset).__name__ == "ApprovalRequiredToolset"
+                visit(cast(object, wrapped), forced)
+                return
+
+            nested = getattr(toolset, "toolsets", None)
+            if isinstance(nested, (list, tuple)):
+                for child in cast(Sequence[object], nested):
+                    visit(child, approval_forced)
+                return
+
+            tools = getattr(toolset, "tools", None)
+            if not isinstance(tools, dict):
+                return
+
+            for name, tool in cast(dict[object, object], tools).items():
+                if not isinstance(name, str):
+                    continue
+                description = getattr(tool, "description", "") or ""
+                requires_approval = (
+                    bool(getattr(tool, "requires_approval", False)) or approval_forced
+                )
+                collected[name] = (_summarize_tool_description(description), requires_approval)
+
+        for toolset in cast(Sequence[object], self.agent.toolsets):
+            visit(toolset)
+
+        return sorted(
+            (name, description, requires_approval)
+            for name, (description, requires_approval) in collected.items()
+        )
 
     def _get_approvals(self, requests: DeferredToolRequests) -> DeferredToolResults:
         approval_results = DeferredToolResults()
